@@ -13,13 +13,14 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='leonard',
-    maintainer_email='leonard@todo.todo',
-    description='TODO: Package description',
+    maintainer='Leonard Ngo',
+    maintainer_email='ngoak@islab.snu.ac.kr',
+    description='ROS package for tracking detected people',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'listener = follow_me_tracking.upo_subscriber:main',
         ],
     },
 )

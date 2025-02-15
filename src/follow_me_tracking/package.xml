@@ -3,9 +3,16 @@
 <package format="3">
   <name>follow_me_tracking</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="leonard@todo.todo">leonard</maintainer>
+  <description>
+    ROS message definitions for Follow Me application.
+  </description>
+  <maintainer email="ngoak@islab.snu.ac.kr">Leonard Ngo</maintainer>
   <license>Apache-2.0</license>
+
+  <depend>geometry_msgs</depend>
+  <depend>follow_me_msgs</depend>
+  <depend>nav2_msgs</depend>
+	<depend>upo_laser_people_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
