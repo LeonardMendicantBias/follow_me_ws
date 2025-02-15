@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'follow_me_tracking'
@@ -10,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'data'), glob(os.path.join('*.npy'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -20,7 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'listener = follow_me_tracking.upo_subscriber:main',
+            'talker = follow_me_tracking.publisher_member_function:main',
+            'listener = follow_me_tracking.subscriber_member_function:main',
         ],
     },
 )
