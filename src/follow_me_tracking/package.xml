@@ -10,13 +10,13 @@
   <license>Apache-2.0</license>
 
   <depend>geometry_msgs</depend>
-  <depend>follow_me_msgs</depend>
   <depend>nav2_msgs</depend>
 	<depend>upo_laser_people_msgs</depend>
   <depend>visualization_msgs</depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tutorial_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

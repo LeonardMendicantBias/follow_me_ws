@@ -14,7 +14,7 @@ class MinimalPublisher(Node):
     def __init__(self):
         super().__init__('minimal_publisher')
         self.publisher_ = self.create_publisher(PersonDetectionList, 'detections', 10)
-        timer_period = 1  # seconds
+        timer_period = 0.1  # seconds
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
         self.data_path = os.path.join(
@@ -26,12 +26,14 @@ class MinimalPublisher(Node):
 
     def timer_callback(self):
         data = np.array(np.load(self.data_path))[0:10, 0:150, :]
-        self.get_logger().info(f'{data.shape}')
+        self.get_logger().info(f'{self.counter} {data.shape}')
 
         msg = PersonDetectionList()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
-        for det in data[:, self.counter]:
+        for i, det in enumerate(data[:, self.counter]):
+            # if i == 0:
+            #     print(det[0], det[1])
             _person = PersonDetection()
             _person.type = 0
             _person.score = 1.

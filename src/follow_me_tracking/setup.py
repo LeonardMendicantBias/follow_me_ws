@@ -25,6 +25,9 @@ setup(
         'console_scripts': [
             'talker = follow_me_tracking.publisher_member_function:main',
             'listener = follow_me_tracking.subscriber_member_function:main',
+            'follow_me_server = follow_me_tracking.follow_me_action_server:main',
+            'follow_me_client = follow_me_tracking.follow_me_action_client:main',
+            'tf2_listener = follow_me_tracking.tf2_listener:main',
         ],
     },
 )

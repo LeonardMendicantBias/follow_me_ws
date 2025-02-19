@@ -31,6 +31,16 @@ class Tracker(object):
 		self.trackId = 0
 		self.tracks = []
 
+	def get_track_position(self, track_id):
+		for track in self.tracks:
+			if track.trackId == track_id:
+				return np.array([
+					track.trace[-1][0, 0],
+					track.trace[-1][0, 1]
+				])
+		else:
+			return None
+
 	def update(self, detections):
 		if len(self.tracks) == 0:
 			for i in range(detections.shape[0]):
