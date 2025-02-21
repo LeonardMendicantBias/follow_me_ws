@@ -1,0 +1,3 @@
+geometry_msgs/PoseStamped pose
+---
+int64 track_id

@@ -2,6 +2,8 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
+import threading
+
 from follow_me_msgs.action import FollowMe
 
 
@@ -20,27 +22,26 @@ class FollowMeActionClient(Node):
 		goal_msg.header.frame_id = "base_footprint"
 		self._action_client.wait_for_server()
 
-		self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+		self._goal_future = self._action_client.send_goal_async(goal_msg)
 
-		self._send_goal_future.add_done_callback(self.goal_response_callback)
+		self._goal_future.add_done_callback(self.goal_response_callback)
 
 	def goal_response_callback(self, future):
-		print("Here")
-		goal_handle = future.result()
-		if not goal_handle.accepted:
+		self.goal_handle = future.result()
+		if not self.goal_handle.accepted:
 			self.get_logger().info('Goal rejected :(')
 			return
 
 		self.get_logger().info('Goal accepted :)')
 
-		self._get_result_future = goal_handle.get_result_async()
-		self._get_result_future.add_done_callback(self.get_result_callback)
+		self._get_result_future = self.goal_handle.get_result_async()
+		# self._get_result_future.add_done_callback(self.get_result_callback)
 
 	def cancel_goal(self):
 		if self.goal_handle:
-			self.goal_handle = None
 			cancel_future = self.goal_handle.cancel_goal_async()
 			cancel_future.add_done_callback(self.cancel_response_callback)
+			self.goal_handle = None
 		else:
 			self.get_logger().info('No goal to cancel')
 
@@ -51,14 +52,12 @@ class FollowMeActionClient(Node):
 		else:
 			self.get_logger().info('Failed to cancel goal')
 
-
-def main(args=None):
-	rclpy.init(args=args)
-
+def main():
+	rclpy.init()
 	action_client = FollowMeActionClient()
-
-	try:
-		while True:
+	
+	def user_input_loop():
+		while rclpy.ok():
 			cmd = input("type start/stop or exit.\n")
 			if cmd.lower() == "start":
 				action_client.send_goal()
@@ -68,10 +67,12 @@ def main(args=None):
 				action_client.get_logger().info('Exiting...')
 				break
 
-	except KeyboardInterrupt:
-		print('interrupted!')
-
-	# rclpy.spin(action_client)
+	user_thread = threading.Thread(target=user_input_loop)
+	user_thread.start()
+	rclpy.spin(action_client)
+	user_thread.join()
+	action_client.destroy_node()
+	rclpy.shutdown()
 
 
 if __name__ == '__main__':
