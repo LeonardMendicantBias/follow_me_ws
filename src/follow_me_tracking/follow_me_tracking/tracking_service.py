@@ -4,6 +4,7 @@ import tf2_ros
 from tf2_ros import TransformException
 
 import numpy as np
+from scipy.spatial.distance import cdist
 
 from visualization_msgs.msg import Marker, MarkerArray
 from upo_laser_people_msgs.msg import PersonDetection, PersonDetectionList
@@ -18,7 +19,7 @@ from follow_me_msgs.srv import PersonId, PersonTracking
 class TrackingService(Node):
 
 	def __init__(self):
-		super().__init__('minimal_service')
+		super().__init__('tracking_service')
 		
 		# publish the updated 
 		self.tf_buffer = tf2_ros.Buffer()
@@ -55,7 +56,7 @@ class TrackingService(Node):
 		Update human tracks and send the updated positions to Nav
 	'''
 	def detection_callback(self, msg: PersonDetectionList):
-		# if len(msg.detections) == 0: return
+		if len(msg.detections) == 0: return
 		detections = np.array([
 			[det.position.x, det.position.y]
 			for det in msg.detections
@@ -63,16 +64,16 @@ class TrackingService(Node):
 		self.tracker.update(detections)
 
 		_msg = MarkerArray()
-		for idx, track in enumerate(self.tracker.tracks):
+		for track in self.tracker.tracks:
+			if len(track.trace) == 0: continue
+			
 			marker = Marker()
 			marker.header.frame_id = "velodyne"
 			marker.header.stamp = msg.header.stamp
 
-			marker.id = idx
+			marker.id = track.trackId
 			marker.type = Marker.CUBE
 			marker.action = Marker.ADD
-
-			if len(track.trace) == 0: continue
 
 			marker.pose.position.x = track.trace[-1][0, 0]# + 0.4
 			marker.pose.position.y = track.trace[-1][0, 1]# - 0.4
@@ -81,7 +82,7 @@ class TrackingService(Node):
 			marker.scale.y = 2.0*0.4
 			marker.scale.z = 1.5
 
-			_idx = min(idx, len(self._track_colors) - 1)
+			_idx = min(track.trackId, len(self._track_colors) - 1)
 			marker.color.r = self._track_colors[_idx][0] / 255.
 			marker.color.g = self._track_colors[_idx][1] / 255.
 			marker.color.b = self._track_colors[_idx][2] / 255.
@@ -91,39 +92,38 @@ class TrackingService(Node):
 		self.visualizing_publisher.publish(_msg)
 
 	def person_id(self, request, response):
-		robot_posestamp = request.pose
+		header = request.header
 
-		# transform robot pose from "map" to "velodyne" frame
+		# 1/ Find the position of robot_frame
 		try:
 			t = self.tf_buffer.lookup_transform(
-				"velodyne", "map",
+				"velodyne", header.frame_id,
 				rclpy.time.Time(),
+				# request.header.stamp,
 				rclpy.duration.Duration(seconds=5.0)
 			)
 		except tf2_ros.TransformException as ex:
 			print("error:", ex)
 			return response
 		
-		transformed_posestamp = tf2_geometry_msgs.do_transform_pose_stamped(
-			robot_posestamp, t
-		)
+		# position of robot  w.r.t. frame "velodyne"
+		robot_position = np.array([
+			t.transform.translation.x,
+			t.transform.translation.y,
+		])
+		if len(self.tracker.tracks) == 0:
+			return response
 
-		min_dist = np.inf
-		for track in self.tracker.tracks:
-			if len(track.trace) == 0:
-				response.track_id = -1
-				continue
-			
-			dist = np.linalg.norm(np.array([
-				transformed_posestamp.pose.position.x,
-				transformed_posestamp.pose.position.y,
-			]) - np.array([
-				track.trace[-1][0, 0],
-				track.trace[-1][0, 1],
-			]))
-			if dist < min_dist:
-				response.track_id = track.trackId
-				min_dist = dist
+		# 2/ find the nearest person to follow
+		distances = cdist(
+			robot_position[np.newaxis, ...],
+			np.array([
+				[track.trace[-1][0, 0], track.trace[-1][0, 1]]
+				for track in self.tracker.tracks
+				if len(track.trace) > 0
+			])
+		)
+		response.track_id = self.tracker.tracks[np.argmin(distances[0])].trackId
 
 		print("track_id:", response.track_id)
 
@@ -132,11 +132,12 @@ class TrackingService(Node):
 	def person_tracking(self, request, response):
 		track_id = request.track_id
 
-		# transform robot pose from "map" to "velodyne" frame
+		# transform robot pose from "velodyne" to "map"
 		try:
-			t = self.tf_buffer.lookup_transform(
-				"map", "velodyne",
+			transform = self.tf_buffer.lookup_transform(
+				"map", "velodyne",  # request.header.frame_id
 				rclpy.time.Time(),
+				# request.header.stamp
 				rclpy.duration.Duration(seconds=5.0)
 			)
 		except tf2_ros.TransformException as ex:
@@ -155,11 +156,9 @@ class TrackingService(Node):
 		track_position.pose.position.z = 0.
 
 		transformed_posestamp = tf2_geometry_msgs.do_transform_pose_stamped(
-			track_position, t
+			track_position, transform
 		)
-		transformed_posestamp.pose.orientation = t.transform.rotation
-
-		print("tracking", transformed_posestamp)
+		transformed_posestamp.pose.orientation = transform.transform.rotation
 		response.pose = transformed_posestamp
 		return response
 

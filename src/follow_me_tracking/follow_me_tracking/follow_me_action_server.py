@@ -88,22 +88,34 @@ class FollowMePyServer(Node):
 
 		return dest
 
-	def _get_transform(self, src, tgt):
+	def _get_position(self, frame_id, stamp=None) -> PoseStamped:
 		try:
-			self.get_logger().info(f"Getting {src} -> {tgt} transformation.")
-			return self.tf_buffer.lookup_transform(
-				tgt, src,
-				rclpy.time.Time(),
+			self.get_logger().info(f"Getting {frame_id}'s transformation.")
+			t = self.tf_buffer.lookup_transform(
+				"map", frame_id,
+				stamp if stamp is not None else rclpy.time.Time(),
 				# 3 sec seems to be the minimum
 				# timeout for 5 sec for safe-measure
-				rclpy.duration.Duration(seconds=5.0)
+				rclpy.duration.Duration(seconds=1.0)
 			)
 		except TransformException as ex:
 			# if there is error, reject the following request
 			self.get_logger().info(
-				f'Could not transformation for {src} -> {tgt}: {ex}'
+				f'Could not transformation for {frame_id}: {ex}'
 			)
 			return None
+		
+		# The position of robot w.r.t. frame "map"
+		posestamp = PoseStamped()
+		posestamp.header.stamp = self.get_clock().now().to_msg()
+		posestamp.header.frame_id = "map"  # client.request.header
+		posestamp.pose.position = Point(
+			x=t.transform.translation.x,
+			y=t.transform.translation.y,
+			z=t.transform.translation.z,
+		)
+		posestamp.pose.orientation = t.transform.rotation
+		return posestamp
 
 	'''
 		Processing "Follow me" request
@@ -113,48 +125,13 @@ class FollowMePyServer(Node):
 	'''
 	def start_callback(self, client: rclpy.action.server.ServerGoalHandle):
 		frame_id = client.request.header.frame_id
-		if frame_id in self.frame_to_track:
-			self.get_logger().info(f'{frame_id} is already following.')
-			client.abort()
-			return FollowMe.Result()
-
-		# # 1/ Get position of robot
-		# t = self._get_transform(frame_id, "map")
-		# if t is None:
+		# if frame_id in self.frame_to_track:
+		# 	self.get_logger().info(f'{frame_id} is already following.')
 		# 	client.abort()
 		# 	return FollowMe.Result()
 
-		try:
-			self.get_logger().info(f"Getting {frame_id}'s transformation.")
-			t = self.tf_buffer.lookup_transform(
-				"map", frame_id,
-				rclpy.time.Time(),
-				# 3 sec seems to be the minimum
-				# timeout for 5 sec for safe-measure
-				rclpy.duration.Duration(seconds=5.0)
-			)
-		except TransformException as ex:
-			# if there is error, reject the following request
-			self.get_logger().info(
-				f'Could not transformation for {frame_id}: {ex}'
-			)
-			client.abort()
-			return FollowMe.Result()
-		
-		# The position of robot w.r.t. frame "map"
-		frame_posestamp = PoseStamped()
-		frame_posestamp.header.stamp = self.get_clock().now().to_msg()
-		frame_posestamp.header.frame_id = "map"  # client.request.header
-		frame_posestamp.pose.position = Point(
-			x=t.transform.translation.x,
-			y=t.transform.translation.y,
-			z=t.transform.translation.z,
-		)
-		frame_posestamp.pose.orientation = t.transform.rotation
-
 		# 2/ indentify the nearest person to follow
-		id_req = PersonId.Request()
-		id_req.pose = frame_posestamp
+		id_req = PersonId.Request(header=client.request.header)
 		future = self.id_service_client.call_async(id_req)
 		rclpy.spin_until_future_complete(self, future)
 		id_response = future.result()
@@ -164,38 +141,42 @@ class FollowMePyServer(Node):
 			self.get_logger().info(f"No person to follow.")
 			client.abort()
 			return FollowMe.Result()
-		print("track_id", track_id)
+		else:
+			print("track_id", track_id)
 		# self.frame_to_track[frame_id] = track_id
 
 		# 3/ initiate follow me
 		goal_msg = NavigateToPose.Goal()
 
-		tracking_req = PersonTracking.Request()
-		tracking_req.track_id = track_id
+		tracking_req = PersonTracking.Request(track_id=track_id)
 		future = self.tracking_service_client.call_async(tracking_req)
 		rclpy.spin_until_future_complete(self, future)
 		tracking_response = future.result()
-		track_posestamp = tracking_response.pose
+		track_posestamp = tracking_response.pose  # w.r.t. frame "map"
+		
+		prev_robot_posestamp = self._get_position(frame_id, client.request.header.stamp)
+		if prev_robot_posestamp is None:
+			client.abort()
+			return FollowMe.Result()
+		
+		_posestamp = self._fix_posestamp(prev_robot_posestamp, track_posestamp)
+		goal_msg.pose = _posestamp
 
-		fix_track_posestamp = self._fix_posestamp(frame_posestamp, track_posestamp)
-		goal_msg.pose = fix_track_posestamp
-
-		self.nav_client.wait_for_server()
-		send_goal_future = self.nav_client.send_goal_async(goal_msg)
+		# self.nav_client.wait_for_server()
+		# send_goal_future = self.nav_client.send_goal_async(goal_msg)
 		# rclpy.spin_until_future_complete(self, send_goal_future)
 		# self.send_goal_future.add_done_callback(self.goal_response_callback)
 
+		print("here")
 		self.get_logger().info(f"Robot with id {frame_id} starts following person with id {track_id}.")
 		counter = 0
-		_track_posestamp = fix_track_posestamp
 		while rclpy.ok():
 			if client.is_cancel_requested:
 				client.canceled()
 				self.get_logger().info("Goal canceled.")
 				return client.Result()
 			
-			tracking_req = PersonTracking.Request()
-			tracking_req.track_id = track_id
+			tracking_req = PersonTracking.Request(track_id=track_id)
 			future = self.tracking_service_client.call_async(tracking_req)
 			rclpy.spin_until_future_complete(self, future)
 			tracking_response = future.result()
@@ -209,14 +190,17 @@ class FollowMePyServer(Node):
 			update_goal.header.stamp = self.get_clock().now().to_msg()
 			# update_goal.pose = track_posestamp.pose
 
-			fix_track_posestamp = self._fix_posestamp(_track_posestamp, track_posestamp)
-			if fix_track_posestamp is None:
+			# _posestamp = self._get_position(frame_id)
+			# if _posestamp is None:
+			# 	continue
+			next_posestamp = self._fix_posestamp(_posestamp, track_posestamp)
+			if _posestamp is None:
 				print("Can't fix pose")
 				continue
-			update_goal.pose = fix_track_posestamp.pose
-			self.update_publisher.publish(update_goal)
+			update_goal.pose = next_posestamp.pose
+			# self.update_publisher.publish(update_goal)
+			_posestamp = track_posestamp
 
-			_track_posestamp = fix_track_posestamp
 			print(f"\r{counter} new destination", track_posestamp, end="")
 			counter += 1
 
