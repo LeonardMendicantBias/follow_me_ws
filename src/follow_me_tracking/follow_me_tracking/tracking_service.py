@@ -97,14 +97,21 @@ class TrackingService(Node):
 		# 1/ Find the position of robot_frame
 		try:
 			t = self.tf_buffer.lookup_transform(
-				"velodyne", header.frame_id,
-				rclpy.time.Time(),
-				# request.header.stamp,
+				"velodyne",
+				header.frame_id,
+				request.header.stamp,
 				rclpy.duration.Duration(seconds=5.0)
 			)
 		except tf2_ros.TransformException as ex:
 			print("error:", ex)
 			return response
+		# tf_future = self.tf_buffer.wait_for_transform_async(
+		# 	target_frame="velodyne",
+		# 	source_frame=header.frame_id,
+		# 	time=0
+		# )
+		# rclpy.spin_until_future_complete(self, tf_future, timeout_sec=5.0)
+		# print(tf_future)
 		
 		# position of robot  w.r.t. frame "velodyne"
 		robot_position = np.array([
@@ -172,56 +179,6 @@ def main():
 
 	rclpy.shutdown()
 
-# def _get_track_from_frame(self, frame_pose: PoseStamped):
-# 	try:
-# 		print("first")
-# 		self.get_logger().info(f"Getting velodyne's transformation.")
-# 		t = self.tf_buffer.lookup_transform(
-# 			"map", "velodyne",
-# 			rclpy.time.Time(),
-# 			# 3 sec seems to be the minimum
-# 			# timeout for 5 sec for safe-measure
-# 			rclpy.duration.Duration(seconds=10.0)
-# 		)
-# 	except TransformException as ex:
-# 		self.get_logger().info(
-# 			f'Could not transformation for velodyne: {ex}'
-# 		)
-# 		return None
-	
-# 	track_id = None
-# 	track_pose = None
-# 	min_dist = np.inf
-# 	for i, track in enumerate(self.tracker.tracks):
-# 		track_position = PoseStamped()
-# 		track_position.header.frame_id = "velodyne"
-# 		track_position.header.stamp = self.get_clock().now().to_msg()
-# 		track_position.pose.position.x = track.trace[-1][0, 0]
-# 		track_position.pose.position.y = track.trace[-1][0, 1]
-# 		track_position.pose.position.z = 0.
-# 		track_position.pose.orientation = t.transform.rotation
-
-# 		transformed_pose = tf2_geometry_msgs.do_transform_pose_stamped(
-# 			track_position, t
-# 		)
-		
-# 		dist = np.linalg.norm(np.array([
-# 			frame_pose.pose.position.x,
-# 			frame_pose.pose.position.y,
-# 			frame_pose.pose.position.z,
-# 		]) - np.array([
-# 			transformed_pose.pose.position.x,
-# 			transformed_pose.pose.position.y,
-# 			transformed_pose.pose.position.z,
-# 		]))
-# 		# print(i, transformed_pose.pose.position, dist)
-# 		if dist < min_dist:
-# 			track_id = track.trackId
-# 			min_dist = dist
-# 			track_pose = transformed_pose
-
-# 	print(f"found matching for robot with id: {track_id} and dist at {dist}")
-# 	return track_id, track_pose
 
 if __name__ == '__main__':
 	main()

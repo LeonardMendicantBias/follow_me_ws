@@ -96,7 +96,7 @@ class FollowMePyServer(Node):
 				stamp if stamp is not None else rclpy.time.Time(),
 				# 3 sec seems to be the minimum
 				# timeout for 5 sec for safe-measure
-				rclpy.duration.Duration(seconds=1.0)
+				rclpy.duration.Duration(seconds=5.0)
 			)
 		except TransformException as ex:
 			# if there is error, reject the following request
@@ -125,6 +125,7 @@ class FollowMePyServer(Node):
 	'''
 	def start_callback(self, client: rclpy.action.server.ServerGoalHandle):
 		frame_id = client.request.header.frame_id
+
 		# if frame_id in self.frame_to_track:
 		# 	self.get_logger().info(f'{frame_id} is already following.')
 		# 	client.abort()
@@ -154,7 +155,9 @@ class FollowMePyServer(Node):
 		tracking_response = future.result()
 		track_posestamp = tracking_response.pose  # w.r.t. frame "map"
 		
-		prev_robot_posestamp = self._get_position(frame_id, client.request.header.stamp)
+		# self.get_logger().info(f"{frame_id} initiates follow me procedure.")
+		print(f"{frame_id} initiates follow me procedure.")
+		prev_robot_posestamp = self._get_position(frame_id) # client.request.header.stamp)
 		if prev_robot_posestamp is None:
 			client.abort()
 			return FollowMe.Result()
@@ -162,12 +165,14 @@ class FollowMePyServer(Node):
 		_posestamp = self._fix_posestamp(prev_robot_posestamp, track_posestamp)
 		goal_msg.pose = _posestamp
 
-		# self.nav_client.wait_for_server()
-		# send_goal_future = self.nav_client.send_goal_async(goal_msg)
+		self.nav_client.wait_for_server()
+		send_goal_future = self.nav_client.send_goal_async(goal_msg)
+
+		###
 		# rclpy.spin_until_future_complete(self, send_goal_future)
 		# self.send_goal_future.add_done_callback(self.goal_response_callback)
+		###
 
-		print("here")
 		self.get_logger().info(f"Robot with id {frame_id} starts following person with id {track_id}.")
 		counter = 0
 		while rclpy.ok():
@@ -190,16 +195,16 @@ class FollowMePyServer(Node):
 			update_goal.header.stamp = self.get_clock().now().to_msg()
 			# update_goal.pose = track_posestamp.pose
 
-			# _posestamp = self._get_position(frame_id)
-			# if _posestamp is None:
-			# 	continue
+			_posestamp = self._get_position(frame_id)
+			if _posestamp is None:
+				continue
 			next_posestamp = self._fix_posestamp(_posestamp, track_posestamp)
 			if _posestamp is None:
 				print("Can't fix pose")
 				continue
 			update_goal.pose = next_posestamp.pose
-			# self.update_publisher.publish(update_goal)
-			_posestamp = track_posestamp
+			self.update_publisher.publish(update_goal)
+			# _posestamp = track_posestamp
 
 			print(f"\r{counter} new destination", track_posestamp, end="")
 			counter += 1
