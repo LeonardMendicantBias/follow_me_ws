@@ -10,15 +10,11 @@ import rclpy.time
 import tf_transformations
 import tf2_ros
 from tf2_ros import TransformException
-from tf2_ros.buffer import Buffer
-from tf2_ros.transform_listener import TransformListener
 
-import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-import tf2_geometry_msgs
 from nav2_msgs.action import NavigateToPose
-from geometry_msgs.msg import PoseStamped, Pose, Point
+from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
 from std_msgs.msg import Header
 
 from follow_me_msgs.srv import PersonId, PersonTracking
@@ -29,9 +25,7 @@ class FollowMePyServer(Node):
 
 	def __init__(self):
 		super().__init__('follow_me_action_server')
-		# self.target_frame = self.declare_parameter('target_frame', 'base_footprint').get_parameter_value()
 		
-		# an action server to receive request from robot/user
 		self._action_server = ActionServer(
 			self,
 			FollowMe,
@@ -60,6 +54,8 @@ class FollowMePyServer(Node):
 
 		self.update_publisher = self.create_publisher(PoseStamped, 'goal_update', 10)
 
+		self.declare_parameter('update_freq', 5)
+
 	def cancel_callback(self, client):
 		frame_id = client.request.header.frame_id
 		if frame_id in self.frame_to_track:
@@ -68,27 +64,17 @@ class FollowMePyServer(Node):
 		self.get_logger().info(f'{frame_id} stops following.')
 		return CancelResponse.ACCEPT
 
-	def _fix_posestamp(self, source: PoseStamped, dest: PoseStamped) -> PoseStamped:
-		print(source.header.frame_id, dest.header.frame_id)
-		# if source.header.frame_id != dest.header.frame_id:
-		# 	print("not in the same frame")
-		# 	return None
-		
-		x1, y1 = source.pose.position.x, source.pose.position.y
-		x2, y2 = dest.pose.position.x, dest.pose.position.y
+	def _calculate_pose(self, source: Point, dest: Point) -> Pose:
+		# direction from source toward dest
+		yaw = math.atan2(source.y - dest.y, source.x - dest.x)
+		q = tf_transformations.quaternion_from_euler(0, 0, yaw)
 
-		# direction source -> dest
-		yaw = math.atan2(y1 - y2, x1 - x2)
-		quaternion = tf_transformations.quaternion_from_euler(0, 0, yaw)
+		return Pose(
+			position=dest,
+			orientation=Quaternion(*q)
+		)
 
-		dest.pose.orientation.x = quaternion[0]
-		dest.pose.orientation.y = quaternion[1]
-		dest.pose.orientation.z = quaternion[2]
-		dest.pose.orientation.w = quaternion[3]
-
-		return dest
-
-	def _get_position(self, frame_id, stamp=None) -> PoseStamped:
+	def _get_position(self, frame_id, stamp=None) -> Point:
 		try:
 			self.get_logger().info(f"Getting {frame_id}'s transformation.")
 			t = self.tf_buffer.lookup_transform(
@@ -105,17 +91,19 @@ class FollowMePyServer(Node):
 			)
 			return None
 		
-		# The position of robot w.r.t. frame "map"
-		posestamp = PoseStamped()
-		posestamp.header.stamp = self.get_clock().now().to_msg()
-		posestamp.header.frame_id = "map"  # client.request.header
-		posestamp.pose.position = Point(
+		return Point(
 			x=t.transform.translation.x,
 			y=t.transform.translation.y,
 			z=t.transform.translation.z,
 		)
-		posestamp.pose.orientation = t.transform.rotation
-		return posestamp
+
+	def _get_track_position(self, track_id) -> Point:
+		tracking_req = PersonTracking.Request(track_id=track_id)
+		future = self.tracking_service_client.call_async(tracking_req)
+		rclpy.spin_until_future_complete(self, future)
+		tracking_response = future.result()
+
+		return tracking_response.position
 
 	'''
 		Processing "Follow me" request
@@ -124,6 +112,7 @@ class FollowMePyServer(Node):
 		3/ Initiate following 
 	'''
 	def start_callback(self, client: rclpy.action.server.ServerGoalHandle):
+		_update_freq = self.get_parameter('update_freq').get_parameter_value().integer_value
 		frame_id = client.request.header.frame_id
 
 		# if frame_id in self.frame_to_track:
@@ -149,24 +138,29 @@ class FollowMePyServer(Node):
 		# 3/ initiate follow me
 		goal_msg = NavigateToPose.Goal()
 
-		tracking_req = PersonTracking.Request(track_id=track_id)
-		future = self.tracking_service_client.call_async(tracking_req)
-		rclpy.spin_until_future_complete(self, future)
-		tracking_response = future.result()
-		track_posestamp = tracking_response.pose  # w.r.t. frame "map"
+		# request the position of track_id w.r.t. "map"
+		track_position: Point = self._get_track_position(track_id)
 		
-		# self.get_logger().info(f"{frame_id} initiates follow me procedure.")
-		print(f"{frame_id} initiates follow me procedure.")
-		prev_robot_posestamp = self._get_position(frame_id) # client.request.header.stamp)
-		if prev_robot_posestamp is None:
+		self.get_logger().info(f"{frame_id} initiates follow me procedure.")
+		prev_robot_position: Point = self._get_position(frame_id) # client.request.header.stamp)
+		if prev_robot_position is None:
 			client.abort()
 			return FollowMe.Result()
 		
-		_posestamp = self._fix_posestamp(prev_robot_posestamp, track_posestamp)
-		goal_msg.pose = _posestamp
+		_pose: Pose = self._calculate_pose(prev_robot_position, track_position)
+		goal_msg.pose = PoseStamped(
+			header=Header(
+				frame_id="map",
+				stamp=self.get_clock().now().to_msg()
+			),
+			pose=_pose
+		)
 
-		self.nav_client.wait_for_server()
-		send_goal_future = self.nav_client.send_goal_async(goal_msg)
+		# if not self.nav_client.wait_for_server(timeout_sec=1.0):
+		# 	self.get_logger().info(f"Navigation server is not online!")
+		# 	client.abort()
+		# 	return FollowMe.Result()
+		# send_goal_future = self.nav_client.send_goal_async(goal_msg)
 
 		###
 		# rclpy.spin_until_future_complete(self, send_goal_future)
@@ -174,42 +168,35 @@ class FollowMePyServer(Node):
 		###
 
 		self.get_logger().info(f"Robot with id {frame_id} starts following person with id {track_id}.")
-		counter = 0
 		while rclpy.ok():
 			if client.is_cancel_requested:
 				client.canceled()
 				self.get_logger().info("Goal canceled.")
+				# del self.frame_to_track[frame_id]
 				return client.Result()
 			
-			tracking_req = PersonTracking.Request(track_id=track_id)
-			future = self.tracking_service_client.call_async(tracking_req)
-			rclpy.spin_until_future_complete(self, future)
-			tracking_response = future.result()
-			track_posestamp = tracking_response.pose
-			if track_posestamp is None:
-				print("can't get new position")
+
+			_cur_position: Point = self._get_position(frame_id)
+			if _cur_position is None:
+				time.sleep(0.1)
 				continue
 
-			update_goal = PoseStamped()
-			update_goal.header.frame_id = "map"
-			update_goal.header.stamp = self.get_clock().now().to_msg()
-			# update_goal.pose = track_posestamp.pose
+			track_position: Point = self._get_track_position(track_id)
+			if track_position is None:
+				self.get_logger().info("Cannot get new position")
+				time.sleep(0.1)
+				continue
 
-			_posestamp = self._get_position(frame_id)
-			if _posestamp is None:
-				continue
-			next_posestamp = self._fix_posestamp(_posestamp, track_posestamp)
-			if _posestamp is None:
-				print("Can't fix pose")
-				continue
-			update_goal.pose = next_posestamp.pose
+			update_goal = PoseStamped(
+				header=Header(
+					frame_id="map",
+					stamp=self.get_clock().now().to_msg()
+				),
+				pose=self._calculate_pose(_cur_position, track_position)
+			)
 			self.update_publisher.publish(update_goal)
-			# _posestamp = track_posestamp
 
-			print(f"\r{counter} new destination", track_posestamp, end="")
-			counter += 1
-
-			time.sleep(0.2)  # sec
+			time.sleep(1/_update_freq)  # sec
 		
 		client.succeed()
 		result = FollowMe.Result()

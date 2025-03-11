@@ -14,13 +14,17 @@ class FollowMeActionClient(Node):
 		self._action_client = ActionClient(self, FollowMe, 'follow_me')
 		self.goal_handle = None  # Store the goal handle to cancel later
 
-		# self.declare_parameter('frame_id', 'base_footprint')
+		self.declare_parameter('frame_id', 'base_footprint')
 
 	def send_goal(self):
+		if not self._action_client.wait_for_server(timeout_sec=5.0):
+			self.get_logger().info('Goal server is not online!')
+			return
+
 		goal_msg = FollowMe.Goal()
 		goal_msg.header.stamp = self.get_clock().now().to_msg()
-		goal_msg.header.frame_id = "base_footprint"
-		self._action_client.wait_for_server()
+		_frame_id = self.get_parameter('frame_id').get_parameter_value().string_value
+		goal_msg.header.frame_id = _frame_id  # "base_footprint"
 
 		self._goal_future = self._action_client.send_goal_async(goal_msg)
 
@@ -28,14 +32,12 @@ class FollowMeActionClient(Node):
 
 	def goal_response_callback(self, future):
 		self.goal_handle = future.result()
+
 		if not self.goal_handle.accepted:
 			self.get_logger().info('Goal rejected :(')
 			return
 
 		self.get_logger().info('Goal accepted :)')
-
-		self._get_result_future = self.goal_handle.get_result_async()
-		# self._get_result_future.add_done_callback(self.get_result_callback)
 
 	def cancel_goal(self):
 		if self.goal_handle:
