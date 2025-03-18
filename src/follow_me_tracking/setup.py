@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'tracking_service = follow_me_tracking.tracking_service:main',
+            'subscriber = follow_me_tracking.velodyne_subscriber:main'
         ],
     },
 )

@@ -194,7 +194,7 @@ class FollowMePyServer(Node):
 				),
 				pose=self._calculate_pose(_cur_position, track_position)
 			)
-			self.update_publisher.publish(update_goal)
+			# self.update_publisher.publish(update_goal)
 
 			time.sleep(1/_update_freq)  # sec
 		

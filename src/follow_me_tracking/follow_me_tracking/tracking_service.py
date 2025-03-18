@@ -12,7 +12,7 @@ from upo_laser_people_msgs.msg import PersonDetection, PersonDetectionList
 from .kalmanTracker import Tracker
 
 import tf2_geometry_msgs
-from geometry_msgs.msg import PoseStamped, Pose, Point
+from geometry_msgs.msg import PointStamped
 from follow_me_msgs.srv import PersonId, PersonTracking
 
 
@@ -138,6 +138,7 @@ class TrackingService(Node):
 	
 	def person_tracking(self, request, response):
 		track_id = request.track_id
+		print(f"getting position of {track_id}")
 
 		# transform robot pose from "velodyne" to "map"
 		try:
@@ -155,18 +156,17 @@ class TrackingService(Node):
 		if _track_position is None:
 			return response
 		
-		track_position = PoseStamped()
+		track_position = PointStamped()
 		track_position.header.frame_id = "velodyne"
 		track_position.header.stamp = self.get_clock().now().to_msg()
-		track_position.pose.position.x = _track_position[0]
-		track_position.pose.position.y = _track_position[1]
-		track_position.pose.position.z = 0.
+		track_position.point.x = _track_position[0]
+		track_position.point.y = _track_position[1]
+		track_position.point.z = 0.
 
-		transformed_posestamp = tf2_geometry_msgs.do_transform_pose_stamped(
+		transformed_pointstamp = tf2_geometry_msgs.do_transform_point(
 			track_position, transform
 		)
-		transformed_posestamp.pose.orientation = transform.transform.rotation
-		response.pose = transformed_posestamp
+		response.point = transformed_pointstamp
 		return response
 
 

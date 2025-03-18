@@ -6,13 +6,16 @@
   <description>TODO: Package description</description>
   <maintainer email="leonard@todo.todo">leonard</maintainer>
   <license>Apache-2.0</license>
-  
-  <!-- <depend>follow_me_tracking</depend> -->
 
+  <exec_depend>tracer_msgs</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>navigation2</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>nav2_common</exec_depend>
+  <exec_depend>urdf</exec_depend>
+  <exec_depend>velodyne</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
