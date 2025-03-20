@@ -156,11 +156,11 @@ class FollowMePyServer(Node):
 			pose=_pose
 		)
 
-		# if not self.nav_client.wait_for_server(timeout_sec=1.0):
-		# 	self.get_logger().info(f"Navigation server is not online!")
-		# 	client.abort()
-		# 	return FollowMe.Result()
-		# send_goal_future = self.nav_client.send_goal_async(goal_msg)
+		if not self.nav_client.wait_for_server(timeout_sec=1.0):
+			self.get_logger().info(f"Navigation server is not online!")
+			client.abort()
+			return FollowMe.Result()
+		send_goal_future = self.nav_client.send_goal_async(goal_msg)
 
 		###
 		# rclpy.spin_until_future_complete(self, send_goal_future)
@@ -194,7 +194,7 @@ class FollowMePyServer(Node):
 				),
 				pose=self._calculate_pose(_cur_position, track_position)
 			)
-			# self.update_publisher.publish(update_goal)
+			self.update_publisher.publish(update_goal)
 
 			time.sleep(1/_update_freq)  # sec
 		

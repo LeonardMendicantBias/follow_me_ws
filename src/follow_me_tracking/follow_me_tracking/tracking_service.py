@@ -138,7 +138,6 @@ class TrackingService(Node):
 	
 	def person_tracking(self, request, response):
 		track_id = request.track_id
-		print(f"getting position of {track_id}")
 
 		# transform robot pose from "velodyne" to "map"
 		try:
