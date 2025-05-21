@@ -1,0 +1,8 @@
+<launch>
+    <!-- Declare the use_sim_time argument -->
+    <arg name="use_sim_time" default="false" description="Use simulation time"/>
+
+    <include file="$(find-pkg-share slam_toolbox)/launch/online_async_launch.py">
+        <arg name="use_sim_time" value="false"/>
+    </include>
+</launch>
