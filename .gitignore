@@ -56,3 +56,4 @@ qtcreator-*
 CATKIN_IGNORE
 *.onnx
 *.engine
+*.zip
