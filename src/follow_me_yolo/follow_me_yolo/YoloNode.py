@@ -339,6 +339,9 @@ def main(args=None):
    rclpy.init(args=args)
 
    publisher = YoloPublisher()
+   publisher.set_parameters([
+      rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, True)
+   ])
 
    rclpy.spin(publisher)
 

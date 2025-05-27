@@ -8,7 +8,7 @@
 
   <depend>realsense2_camera</depend>
   <depend>velodyne</depend>
-  <depend>tracer_base</depend>
+  <!-- <depend>tracer_base</depend> -->
   <depend>point_cloud_transport</depend>
   
   <exec_depend>slam_toolbox</exec_depend>
