@@ -84,8 +84,13 @@ class FollowMeActionServer(Node):
 			MarkerArray,
 			'/action/marker', 1
 		)
+		self.pose_publisher = self.create_publisher(
+			PoseStamped,
+			'/action/posestamp', 1
+		)
 
 	def _reset_variable(self):
+		self._is_dirty = False
 		self.request_flag = False
 		self.init_flag = False
 		self._is_following = False
@@ -115,40 +120,20 @@ class FollowMeActionServer(Node):
 		header: Header
 	) -> PoseStamped:
 		# dest = dest.cpu().numpy()
-		dest = Point(x=float(dest[0]), y=float(dest[1]), z=float(dest[2]))
+		dest = Point(x=float(dest[0]), y=0., z=float(dest[2]))
 		
 		pose = Pose()
-		
-		# Set position
-		pose.position = Point(x=dest.x, y=dest.y, z=dest.z)
 
-		# Create normalized direction vector
-		direction = [dest.x, dest.y, dest.z]
-		norm = math.sqrt(dest.x**2 + dest.y**2 + dest.z**2)
-		if norm == 0:
-			raise ValueError("Target position cannot be the origin (0,0,0)")
-		direction = [c / norm for c in direction]
-
-		# Define robot forward direction (e.g., x-axis)
-		forward = [0.0, 0.0, 1.0]
-
-		# Compute axis of rotation (cross product) and angle (dot product)
-		cross = [
-			forward[1]*direction[2] - forward[2]*direction[1],
-			forward[2]*direction[0] - forward[0]*direction[2],
-			forward[0]*direction[1] - forward[1]*direction[0]
-		]
-		dot = sum(f*d for f, d in zip(forward, direction))
-		angle = math.acos(max(min(dot, 1.0), -1.0))  # Clamp dot to [-1, 1]
-
-		# Special case: if vectors are opposite, rotate 180 degrees around Z
-		if abs(dot + 1.0) < 1e-6:
-			quat = tf_transformations.quaternion_about_axis(math.pi, [0, 0, 1])
-		else:
-			quat = tf_transformations.quaternion_about_axis(angle, cross)
+		# yaw = math.atan2(-dest.y, -dest.x)
+		# yaw = math.atan2(-dest.z, -dest.x)
+		yaw = math.atan2(dest.x, dest.z)
+		q = tf_transformations.quaternion_from_euler(0, yaw, 0)
 
 		# Assign orientation
-		pose.orientation = Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
+		pose.position = dest
+		# pose.position = Point(x=0., y=0., z=1.)
+		pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+		# pose.orientation = Quaternion(x=0., y=0., z=0., w=1.0)
 
 		return PoseStamped(
 			header=Header(
@@ -161,7 +146,7 @@ class FollowMeActionServer(Node):
 	def _get_target_from_bboxes(self, bboxes, W, H):
 		dist = np.array([
 			abs(bbox[0]-W) + abs(bbox[1]-H)
-			for bbox in bboxes.cpu().numpy()
+			for bbox in bboxes
 		])
 		return dist.argmax()
 
@@ -171,7 +156,6 @@ class FollowMeActionServer(Node):
 
 	def yolo_callback(self, msg: ResultArray):
 		# if not self.init_flag: return
-		_color = ColorRGBA(r=1.0, g=0.8, b=0.1, a=0.5)
 		
 		image = self.cv_bridge.imgmsg_to_cv2(msg.image, "bgr8")
 
@@ -196,34 +180,40 @@ class FollowMeActionServer(Node):
 			[ret.position.x, ret.position.y, ret.position.z]
 			for ret in msg.results
 		]
-		
 		# initiate the FollowMe via sending NavigateToPose
+		position = None
 		if not self._is_following:
+			if len(bboxes) == 0: return
+
 			H, W, _ = image.shape
 			target_id = self._get_target_from_bboxes(bboxes, W, H)
 			
 			if positions[target_id] is None: return
 			# initialize PoseStamped from user's position
-			pose_stamp = self._point_to_posestamp(
-				positions[target_id],
-				msg.image.header
-			)
+			position = positions[target_id]
+			# ignore if the potential user is too far away
+			# if np.linalg.norm(position, 2) > 3: return
+			pose_stamp = self._point_to_posestamp(position, msg.image.header)
 			if pose_stamp is None: return
 
-			goal_msg = NavigateToPose.Goal()
-			goal_msg.pose = pose_stamp
-			if not self.nav_client.wait_for_server(timeout_sec=1.0):
-				self.get_logger().info(f"Navigation server is not online!")
-				return FollowMe.Result()
-			nav_future = self.nav_client.send_goal_async(goal_msg)
-			nav_future.add_done_callback(self.nav_callback)
-		else:
-			position = None
+			# goal_msg = NavigateToPose.Goal()
+			# goal_msg.pose = pose_stamp
+			# if not self.nav_client.wait_for_server(timeout_sec=1.0):
+			# 	self.get_logger().info(f"Navigation server is not online!")
+			# 	return FollowMe.Result()
+			# nav_future = self.nav_client.send_goal_async(goal_msg)
+			# nav_future.add_done_callback(self.nav_callback)
+			self._is_following = True
+			self._is_dirty = True
+		else:  # Either extract new location from bboxes
 			if len(bboxes) > 0:
 				all_features, visible_part = self.tracker.process_crop(
 					image, bboxes, kpts, confs
 				)
-				target_id = self.tracker.identify(all_features, visible_part)
+				target_id = self.tracker.identify(
+					all_features.cpu().detach(),#.numpy(),
+					visible_part.cpu().detach(),#.numpy()
+				)
 
 				# not good enough re-identification
 				# if avg_scores[target_id] > 0.5:
@@ -233,20 +223,30 @@ class FollowMeActionServer(Node):
 				position = positions[target_id]
 				if position is not None:
 					self.kf.update(np.array([[position[0]], [position[2]]]))
+					self._is_dirty = True
 
+				self.tracker.update(
+					target_id, 
+					all_features.cpu().detach(),
+					visible_part.cpu().detach()
+				)
+
+			# or get predicted position
+			# if position is None and self._is_dirty:
+			# 	self.kf.predict()
+			# 	x_pred, z_pred = self.kf.x[0, 0], self.kf.x[1, 0]
+			# 	position = [x_pred, 0., z_pred]
+			# 	self._is_dirty = False
 			if position is None:
-				self.kf.predict()
-				x_pred, z_pred = self.kf.x[0, 0], self.kf.x[1, 0]
-				position = [x_pred, 0., z_pred]
+				return
 
 			pose_stamp = self._point_to_posestamp(position, msg.image.header)
 
-			pose_stamp = self._point_to_posestamp(
-				positions[target_id],
-				msg.image.header
-			)
 			if pose_stamp is None: return
-			self.update_publisher.publish(pose_stamp)
+			# self.update_publisher.publish(pose_stamp)
+
+		self.pose_publisher.publish(pose_stamp)
+		
 
 		markers = MarkerArray()
 		marker = Marker()
@@ -264,7 +264,7 @@ class FollowMeActionServer(Node):
 		marker.scale.z = 1.0  
 		marker.lifetime.sec = 0  # 0 means forever
 
-		marker.color = _color
+		marker.color = ColorRGBA(r=1.0, g=0.8, b=0.1, a=0.5)
 		markers.markers.append(marker)
 		self.marker_publisher.publish(markers)
 

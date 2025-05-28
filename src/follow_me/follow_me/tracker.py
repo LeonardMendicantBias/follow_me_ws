@@ -135,22 +135,38 @@ class Tracker:
 		return all_features, visible_part
 	
 	def identify(self,
-		all_features,
-		visible_part,
+		all_features,  # (K, N+1, D)
+		visible_part,  # (K, N)
 	):
-		scores = [
-			classifier.predict(all_features[:, idx].cpu().detach().numpy())
-			for idx, classifier in enumerate(self.classifiers)
-		]
-		avg_scores = np.mean(scores, axis=0)  # * visiblity_part_indicator
+		global_visible_part = visible_part.amax(axis=-1, keepdim=True)
+		_visible_part = torch.cat([visible_part, global_visible_part], dim=-1)
+
+		K = _visible_part.shape[0]
+
+		# scores = [
+		# 	classifier.predict(all_features[:, idx]) * _visible_part[:, idx]
+		# 	for idx, classifier in enumerate(self.classifiers)
+		# ]
+		scores = []
+		for idx, classifier in enumerate(self.classifiers):
+			if len(self.st_pos_memory[idx]) >= self.min_pos_example:
+				# print(all_features[:, idx].shape, _visible_part[:, idx].shape)
+				scores.append(classifier.predict(all_features[:, idx]) * _visible_part[:, idx].numpy())
+			else:
+				scores.append(np.zeros(K))
+
+		# print(scores)
+		# print(np.mean(scores, axis=0))
+		avg_scores = np.divide(np.mean(scores, axis=0), _visible_part.sum(-1).numpy())
 		target_id = np.argmax(avg_scores)
+		# print(avg_scores[target_id])
 
 		return target_id
 
 	def update(self,
 		target_id,
 		all_features,  # (K, N, ...)
-		visible_part_indicator,  # (K, N, ...)
+		visible_part,  # (K, N, ...)
 	):
 		# TODO: self._update_resnet()
 		
@@ -158,9 +174,8 @@ class Tracker:
 		# update short-term memory	
 		for k in range(K):
 			for n in range(self.N+1):
-				if n == 0:
-					if visible_part_indicator[k, n-1] == 0:
-						continue
+				if n == 0 or visible_part[k, n-1] == 0:
+					continue
 				
 				if k == target_id:  # positive
 					if len(self.st_pos_memory[n]) > self.memory_size:
@@ -174,9 +189,8 @@ class Tracker:
 		# update long memory
 		for k in range(K):
 			for n in range(self.N+1):
-				if n != 0:
-					if visible_part_indicator[k, n-1] == 0:
-						continue
+				if n != 0 or visible_part[k, n-1] == 0:
+					continue
 				
 				if k == target_id:  # positive
 					if len(self.lt_pos_memory[n]) < self.memory_size:

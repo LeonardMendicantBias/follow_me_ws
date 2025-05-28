@@ -273,10 +273,6 @@ class YoloPublisher(Node):
       self.cam_model.fromCameraInfo(info_msg)
       depth_image = self.cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough")  # (480, 848)
       _depth_image = cv2.resize(depth_image, (image.shape[1], image.shape[0]))
-      scale = np.array([
-         image.shape[1] / depth_image.shape[1],
-         image.shape[0] / depth_image.shape[0],
-      ])
       for idx_, (bbox, kpts, confs) in enumerate(zip(result.boxes.xywh, result.keypoints.xy, result.keypoints.conf)):
          kpts = kpts.cpu().tolist()
          x, y, w, h = bbox.cpu().tolist()
