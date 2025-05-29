@@ -11,6 +11,7 @@ import math
 import tf_transformations
 # from tf2_ros.transformations import do_transform_pose
 import tf2_geometry_msgs
+from tf2_geometry_msgs import do_transform_pose
 import cv2
 from cv_bridge import CvBridge
 from image_geometry import PinholeCameraModel
@@ -126,20 +127,36 @@ class FollowMeActionServer(Node):
 
 		# yaw = math.atan2(-dest.y, -dest.x)
 		# yaw = math.atan2(-dest.z, -dest.x)
-		yaw = math.atan2(dest.x, dest.z)
-		q = tf_transformations.quaternion_from_euler(0, yaw, 0)
+		yaw = math.atan2(dest.z, dest.x)
+		# q = tf_transformations.quaternion_from_euler(0, 0, yaw)
+		q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
 
 		# Assign orientation
-		pose.position = dest
+		pose.position = dest  # (X: Right, Y: Down, Z: Forward)
 		# pose.position = Point(x=0., y=0., z=1.)
 		pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 		# pose.orientation = Quaternion(x=0., y=0., z=0., w=1.0)
 
+		# try:
+		# 	transform = self.tf_buffer.lookup_transform(
+		# 		"map",
+		# 		header.frame_id,
+		# 		# header.stamp,
+		# 		rclpy.time.Time(),
+		# 		rclpy.time.Duration(seconds=1.0)
+		# 	)
+		# except TransformException as e:
+		# 	self.get_logger().error(f"Transform error: {e}")
+		# 	return None
+
+		# transformed_pose = tf2_geometry_msgs.do_transform_pose(pose, transform)
 		return PoseStamped(
 			header=Header(
 				frame_id=header.frame_id,
+				# frame_id="map",
 				stamp=self.get_clock().now().to_msg()
 			),
+			# pose=transformed_pose
 			pose=pose
 		)
 	
@@ -196,13 +213,15 @@ class FollowMeActionServer(Node):
 			pose_stamp = self._point_to_posestamp(position, msg.image.header)
 			if pose_stamp is None: return
 
-			# goal_msg = NavigateToPose.Goal()
-			# goal_msg.pose = pose_stamp
-			# if not self.nav_client.wait_for_server(timeout_sec=1.0):
-			# 	self.get_logger().info(f"Navigation server is not online!")
-			# 	return FollowMe.Result()
-			# nav_future = self.nav_client.send_goal_async(goal_msg)
-			# nav_future.add_done_callback(self.nav_callback)
+			goal_msg = NavigateToPose.Goal()
+			goal_msg.pose = pose_stamp
+			if not self.nav_client.wait_for_server(timeout_sec=1.0):
+				self.get_logger().info(f"Navigation server is not online!")
+				return FollowMe.Result()
+			nav_future = self.nav_client.send_goal_async(goal_msg)
+			nav_future.add_done_callback(self.nav_callback)
+			self.get_logger().info(f"first destination")
+			
 			self._is_following = True
 			self._is_dirty = True
 		else:  # Either extract new location from bboxes
@@ -243,7 +262,7 @@ class FollowMeActionServer(Node):
 			pose_stamp = self._point_to_posestamp(position, msg.image.header)
 
 			if pose_stamp is None: return
-			# self.update_publisher.publish(pose_stamp)
+			self.update_publisher.publish(pose_stamp)
 
 		self.pose_publisher.publish(pose_stamp)
 		

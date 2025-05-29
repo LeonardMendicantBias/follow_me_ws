@@ -206,7 +206,6 @@ class YoloPublisher(Node):
       pass
 
    def _filter_depth(self, join_depth, min_bound=25, max_bound=75):
-
       Q1 = np.percentile(join_depth, min_bound)
       Q3 = np.percentile(join_depth, max_bound)
       IQR = Q3 - Q1
