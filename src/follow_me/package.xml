@@ -8,6 +8,10 @@
   <license>Apache-2.0</license>
 
   <depend>tf2_ros</depend>
+  <depend>realsense2_camera</depend>
+  <depend>velodyne</depend>
+  <!-- <depend>tracer_base</depend> -->
+  <depend>point_cloud_transport</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -15,6 +19,10 @@
   <test_depend>python3-pytest</test_depend>
   
   <exec_depend>follow_me_msgs</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

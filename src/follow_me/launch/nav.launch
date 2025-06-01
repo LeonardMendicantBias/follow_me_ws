@@ -1,0 +1,9 @@
+<launch>
+    <!-- Declare the use_sim_time argument -->
+    <arg name="use_sim_time" default="false" description="Use simulation time"/>
+
+    <include file="$(find-pkg-share nav2_bringup)/launch/navigation_launch.py">
+        <arg name="use_sim_time" value="false"/>
+        <arg name="params_file" value="$(find-pkg-share follow_me_launch)/config/my_nav2_params.yaml"/>
+    </include>
+</launch>

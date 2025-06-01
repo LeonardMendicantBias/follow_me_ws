@@ -124,39 +124,18 @@ class FollowMeActionServer(Node):
 		dest = Point(x=float(dest[0]), y=0., z=float(dest[2]))
 		
 		pose = Pose()
-
-		# yaw = math.atan2(-dest.y, -dest.x)
-		# yaw = math.atan2(-dest.z, -dest.x)
 		yaw = math.atan2(dest.z, dest.x)
-		# q = tf_transformations.quaternion_from_euler(0, 0, yaw)
 		q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
 
 		# Assign orientation
 		pose.position = dest  # (X: Right, Y: Down, Z: Forward)
-		# pose.position = Point(x=0., y=0., z=1.)
 		pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
-		# pose.orientation = Quaternion(x=0., y=0., z=0., w=1.0)
 
-		# try:
-		# 	transform = self.tf_buffer.lookup_transform(
-		# 		"map",
-		# 		header.frame_id,
-		# 		# header.stamp,
-		# 		rclpy.time.Time(),
-		# 		rclpy.time.Duration(seconds=1.0)
-		# 	)
-		# except TransformException as e:
-		# 	self.get_logger().error(f"Transform error: {e}")
-		# 	return None
-
-		# transformed_pose = tf2_geometry_msgs.do_transform_pose(pose, transform)
 		return PoseStamped(
 			header=Header(
 				frame_id=header.frame_id,
-				# frame_id="map",
 				stamp=self.get_clock().now().to_msg()
 			),
-			# pose=transformed_pose
 			pose=pose
 		)
 	
@@ -172,8 +151,6 @@ class FollowMeActionServer(Node):
 		self._is_following = True
 
 	def yolo_callback(self, msg: ResultArray):
-		# if not self.init_flag: return
-		
 		image = self.cv_bridge.imgmsg_to_cv2(msg.image, "bgr8")
 
 		bboxes = [
@@ -197,6 +174,7 @@ class FollowMeActionServer(Node):
 			[ret.position.x, ret.position.y, ret.position.z]
 			for ret in msg.results
 		]
+		
 		# initiate the FollowMe via sending NavigateToPose
 		position = None
 		if not self._is_following:

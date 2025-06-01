@@ -72,13 +72,14 @@ class Tracker:
 		kpts, 
 		confs
 	):
-		bboxes = torch.tensor(bboxes).to(self.device)
-		kpts = torch.tensor(kpts).to(self.device)
-		confs = torch.tensor(confs).to(self.device)
+		bboxes = torch.tensor(bboxes).to(self.device)	# (K, 4)
+		kpts = torch.tensor(kpts).to(self.device)		# (K, 17, 2)
+		confs = torch.tensor(confs).to(self.device)		# (K, 17)
+		K = bboxes.shape[0]
 		
 		crop_imgs = [
 			rgb_img[
-				int(bbox[1]-bbox[3]//2):int(bbox[1]+bbox[3]//2), int(bbox[0]-bbox[2]//2):int(bbox[0]+bbox[2]//2)
+				int(bbox[1]-bbox[3]/2):int(bbox[1]+bbox[3]/2), int(bbox[0]-bbox[2]/2):int(bbox[0]+bbox[2]/2)
 			] for bbox in bboxes
 		]
 		bbox_features = self.resnet(
@@ -86,37 +87,39 @@ class Tracker:
 				self.transform(crop_img) for crop_img in crop_imgs
 			]).to(self.device)
 		)  # (K, D, H, W)
-		# print("bbox_features", bbox_features.shape)
-		K = kpts.shape[0]
 
-		# (K, 17) -> (K, 9) -> (K, N, 9)
-		visible_kpt = (confs[:, self.part_ids].unsqueeze(1) * self.part_masks.to(self.device).unsqueeze(0))
+		# (K, 17) -> (K, N) -> (K, N, 9)  4 different parts from 9 joints
+		selected_kpts = confs[:, self.part_ids]  # (K, N)
+		# (K, 1, N) * (1, N, 9) -> (K, N, 9)
+		visible_kpt = (selected_kpts.unsqueeze(1) * self.part_masks.to(self.device).unsqueeze(0))
 		visible_kpt = visible_kpt > self.conf_thres
 		visible_part = visible_kpt.amax(-1)  # (K, N)
+		# print("visible_kpt:", visible_kpt.shape, visible_part.shape)
 
+		# extract the y-coordinate of corresponding parts (each part has multiple keypoints)
 		part_kpts = kpts[:, self.part_ids]  # (K, N, 2): K people, N parts, 2D coordinates
-		# select the corresponding parts
+		# (K, 1, 9) * (1, N, 9)-> (K, N, 9)
 		y = part_kpts[:, :, 1].unsqueeze(1) * self.part_masks.to(self.device).unsqueeze(0)
 		y = y * visible_kpt  # ignore the invisible parts
-
+		
 		y_min = y.clone()
 		y_min[y_min == 0] = torch.inf
 		y_min = y_min.amin(dim=-1)
 		y_min[y_min == torch.inf] = 0
-		y_min[:, 0] = bboxes[:, 1]
+		y_min[:, 0] = bboxes[:, 1] - bboxes[:, 3]/2
 
+		# y_max = y.amin(dim=-1)
 		y_max = y.amax(dim=-1)
-		y_max = torch.concat([y_max, bboxes[:, 3:4]], dim=1)[:, 1:]
 
-		# 
-		patch_pixel_size = torch.div(bboxes[:, 3] - bboxes[:, 1], bbox_features.shape[-2])
+		# range of a patch in the bbox
+		patch_pixel_size = torch.div(bboxes[:, 3], bbox_features.shape[-2])
 		coor = torch.arange(bbox_features.shape[-2], device=bbox_features.device).unsqueeze(0).unsqueeze(0)  # (1, 1, H)
 		coor = coor.expand(K, self.N, -1)
 
-		y_min_stt = torch.div(y_min - bboxes[:, 1:2], patch_pixel_size[..., None])
+		y_min_stt = torch.div(y_min - (bboxes[:, 1:2] - bboxes[:, 3:4]/2), patch_pixel_size[..., None])
 		min_coor = torch.ge(coor, y_min_stt.long()[..., None])  # (K, N, H)
 
-		y_max_stt = torch.div(y_max - bboxes[:, 1:2], patch_pixel_size[..., None])
+		y_max_stt = torch.div(y_max - (bboxes[:, 1:2] - bboxes[:, 3:4]/2), patch_pixel_size[..., None])
 		max_coor = torch.le(coor, y_max_stt.long()[..., None])  # (K, N, H)
 
 		visible_part_map = (min_coor * max_coor).unsqueeze(-1).repeat(1, 1, 1, bbox_features.shape[-1]).long()
@@ -127,10 +130,8 @@ class Tracker:
 		masked_features = bbox_features.unsqueeze(1) * visible_part_map.unsqueeze(2)
 		part_features = masked_features.sum(dim=(-2, -1)) / visible_part_map.sum(dim=(-2, -1))[..., None].clamp(min=1e-6)
 
-		global_feature_norm = F.normalize(global_features, p=2, dim=-1)
-		part_feature_norm = F.normalize(part_features, p=2, dim=-1)
-
-		all_features = torch.concat([global_feature_norm.unsqueeze(1), part_feature_norm], dim=1)
+		all_features = torch.concat([global_features.unsqueeze(1), part_features], dim=1)
+		all_features = F.normalize(all_features, p=2, dim=-1)
 
 		return all_features, visible_part
 	
@@ -143,10 +144,6 @@ class Tracker:
 
 		K = _visible_part.shape[0]
 
-		# scores = [
-		# 	classifier.predict(all_features[:, idx]) * _visible_part[:, idx]
-		# 	for idx, classifier in enumerate(self.classifiers)
-		# ]
 		scores = []
 		for idx, classifier in enumerate(self.classifiers):
 			if len(self.st_pos_memory[idx]) >= self.min_pos_example:
@@ -155,11 +152,8 @@ class Tracker:
 			else:
 				scores.append(np.zeros(K))
 
-		# print(scores)
-		# print(np.mean(scores, axis=0))
 		avg_scores = np.divide(np.mean(scores, axis=0), _visible_part.sum(-1).numpy())
 		target_id = np.argmax(avg_scores)
-		# print(avg_scores[target_id])
 
 		return target_id
 
@@ -167,11 +161,10 @@ class Tracker:
 		target_id,
 		all_features,  # (K, N, ...)
 		visible_part,  # (K, N, ...)
-	):
-		# TODO: self._update_resnet()
-		
+	):	
 		K = all_features.shape[0]
-		# update short-term memory	
+
+		# update classifiers using short-term memory
 		for k in range(K):
 			for n in range(self.N+1):
 				if n == 0 or visible_part[k, n-1] == 0:
@@ -186,7 +179,22 @@ class Tracker:
 						self.st_neg_memory[n].pop(0)
 					self.st_neg_memory[n].append(all_features[k, n])
 		
-		# update long memory
+		for idx, classifier in enumerate(self.classifiers):
+			if len(self.st_pos_memory[idx]) < self.min_pos_example:
+				continue
+			
+			X = torch.stack(self.st_pos_memory[idx]).cpu().detach().numpy()
+			y = torch.ones(X.shape[0])
+			
+			if len(self.st_neg_memory[idx]) > 0:
+				X_neg = torch.stack(self.st_neg_memory[idx]).cpu().detach().numpy()
+				y_neg = -1 * torch.ones(X_neg.shape[0])
+				X = np.concatenate([X, X_neg], axis=0)
+				y = np.concatenate([y, y_neg], axis=0)
+			
+			classifier.fit(X, y)
+		
+		# update ResNet using long-term memory
 		for k in range(K):
 			for n in range(self.N+1):
 				if n != 0 or visible_part[k, n-1] == 0:
@@ -204,19 +212,3 @@ class Tracker:
 					else:
 						rand_idx = np.random.randint(0, self.memory_size)
 						self.lt_pos_memory[n][rand_idx] = all_features[k, n]
-							
-		# train Ridge classifier
-		for idx, classifier in enumerate(self.classifiers):
-			if len(self.st_pos_memory[idx]) < self.min_pos_example:
-				continue
-			
-			X = torch.stack(self.st_pos_memory[idx]).cpu().detach().numpy()
-			y = torch.ones(X.shape[0])
-			
-			if len(self.st_neg_memory[idx]) > 0:
-				X_neg = torch.stack(self.st_neg_memory[idx]).cpu().detach().numpy()
-				y_neg = -1 * torch.ones(X_neg.shape[0])
-				X = np.concatenate([X, X_neg], axis=0)
-				y = np.concatenate([y, y_neg], axis=0)
-			
-			classifier.fit(X, y)

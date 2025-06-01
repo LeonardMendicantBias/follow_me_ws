@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'yolo = follow_me_yolo.YoloNode:main',
         ],
     },
 )

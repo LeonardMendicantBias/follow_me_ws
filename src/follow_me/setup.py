@@ -1,3 +1,4 @@
+import glob
 from setuptools import find_packages, setup
 
 package_name = 'follow_me'
@@ -10,6 +11,11 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob.glob('launch/*.launch')),
+        ('share/' + package_name + '/urdf', glob.glob('urdf/*.urdf')),
+        ('share/' + package_name + '/meshes', glob.glob('meshes/*.STL')),
+        ('share/' + package_name + '/config', glob.glob('config/*.xml')),
+        ('share/' + package_name + '/config', glob.glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

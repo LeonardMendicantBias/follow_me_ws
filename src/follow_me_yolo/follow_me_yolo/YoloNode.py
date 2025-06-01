@@ -70,6 +70,7 @@ class YoloPublisher(Node):
       self.declare_parameter('min_cluster_size', 50)
       self.declare_parameter('max_cluster_size', 12500)
       self.declare_parameter('min_distance', 0.5)
+      self.declare_parameter('conf_threshold', 0.5)
 
       self.img_size = [256, 448]
 
@@ -159,7 +160,6 @@ class YoloPublisher(Node):
       ], dtype=np.uint8)
       self.limb_color = pose_palette[[9, 9, 9, 9, 7, 7, 7, 0, 0, 0, 0, 0, 16, 16, 16, 16, 16, 16, 16]]
       self.kpt_color = pose_palette[[16, 16, 16, 16, 16, 0, 0, 0, 0, 0, 0, 9, 9, 9, 9, 9, 9]]
-      self.count = 0
       self.last_marker_count = 0
 
    def visualize_yolo(self, image, result):
@@ -224,18 +224,11 @@ class YoloPublisher(Node):
       rgb_msg: Image,
       depth_msg: Image
    ):
-      self.count += 1
-      if self.count % 2 == 0:
-         self.count = 0
-         return
-      # print(info_msg.header.frame_id, image_msg.header.frame_id, pcd_msg.header.frame_id)
-      # "camera_color_optical_frame", "camera_color_optical_frame", "camera_depth_optical_frame"
-
       # process image
       image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
       # _image = cv2.resize(image, (self.img_size[1], self.img_size[0]))
       # results = self.tensorrt_model(_image, self.img_size, verbose=False)
-      results = self.model(image, self.img_size, verbose=False)
+      results = self.model(image, self.img_size, conf=.5, verbose=False)
       result = list(results)[0]
       self.visualize_yolo(image, result)
       response = ResultArray()
