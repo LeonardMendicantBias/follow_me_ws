@@ -64,15 +64,14 @@ class YoloPublisher(Node):
 
       # self.declare_parameter("half", True)
       self.declare_parameter("frame_id", "base_footprint")
-      self.declare_parameter('voxel_size', 0.1)
-
-      self.declare_parameter('cluster_tolerance', 0.5)
-      self.declare_parameter('min_cluster_size', 50)
-      self.declare_parameter('max_cluster_size', 12500)
-      self.declare_parameter('min_distance', 0.5)
+      self.declare_parameter('img_width', 448)
+      self.declare_parameter('img_height', 256)
       self.declare_parameter('conf_threshold', 0.5)
 
-      self.img_size = [256, 448]
+      self.img_size = [
+         self.get_parameter('img_height').get_parameter_value().integer_value,
+         self.get_parameter('img_width').get_parameter_value().integer_value
+      ]
 
       self.cam_model = PinholeCameraModel()
       self.cv_bridge = CvBridge()
@@ -82,8 +81,7 @@ class YoloPublisher(Node):
       self.depth_sub = Subscriber(self, Image, '/camera/camera/depth/image_rect_raw')
       self.ts = ApproximateTimeSynchronizer(
          [self.info_sub, self.image_sub, self.depth_sub],
-         queue_size=1,
-         slop=0.1  # maximum timestamp difference in seconds
+         queue_size=1, slop=0.1
       )
       self.ts.registerCallback(self.synced_callback)
 
@@ -95,7 +93,6 @@ class YoloPublisher(Node):
          MarkerArray,
          '/yolo/marker', 1
       )
-
       self.result_publisher = self.create_publisher(
          ResultArray,
          '/yolo', 1
@@ -224,12 +221,14 @@ class YoloPublisher(Node):
       rgb_msg: Image,
       depth_msg: Image
    ):
-      # process image
       image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
-      # _image = cv2.resize(image, (self.img_size[1], self.img_size[0]))
-      # results = self.tensorrt_model(_image, self.img_size, verbose=False)
-      results = self.model(image, self.img_size, conf=.5, verbose=False)
+      results = self.model(
+         image, self.img_size,
+         conf=self.get_parameter('conf_threshold').get_parameter_value().double_value,
+         verbose=False
+      )
       result = list(results)[0]
+     
       self.visualize_yolo(image, result)
       response = ResultArray()
       response.image = rgb_msg

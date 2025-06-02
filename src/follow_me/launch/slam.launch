@@ -4,6 +4,6 @@
 
     <include file="$(find-pkg-share slam_toolbox)/launch/online_async_launch.py">
         <!-- <arg name="use_sim_time" value="$(var use_sim_time)"/> -->
-        <arg name="use_sim_time" value="true" />
+        <param name="use_sim_time" value="true" />
     </include>
 </launch>

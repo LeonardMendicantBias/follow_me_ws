@@ -243,7 +243,6 @@ class FollowMeActionServer(Node):
 			self.update_publisher.publish(pose_stamp)
 
 		self.pose_publisher.publish(pose_stamp)
-		
 
 		markers = MarkerArray()
 		marker = Marker()
