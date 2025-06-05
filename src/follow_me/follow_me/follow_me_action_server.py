@@ -43,6 +43,9 @@ class FollowMeActionServer(Node):
 
 	def __init__(self):
 		super().__init__('follow_me_action_server')
+		self.declare_parameter('img_width', 448)
+		self.declare_parameter('img_height', 256)
+
 		self.tf_buffer = Buffer()
 		self.tf_listener = TransformListener(self.tf_buffer, self)
 	
@@ -71,8 +74,8 @@ class FollowMeActionServer(Node):
 		self.update_publisher = self.create_publisher(PoseStamped, 'goal_update', 1)
 		
 		self.img_size = [
-			256,
-			448
+			self.get_parameter('img_height').get_parameter_value().integer_value,
+			self.get_parameter('img_width').get_parameter_value().integer_value
 		]
 		self.tracker = Tracker(
 			img_size=self.img_size,
@@ -141,10 +144,10 @@ class FollowMeActionServer(Node):
 	
 	def _get_target_from_bboxes(self, bboxes, W, H):
 		dist = np.array([
-			abs(bbox[0]-W) + abs(bbox[1]-H)
+			abs(bbox[0]-W/2) + abs(bbox[1]-H/2)
 			for bbox in bboxes
 		])
-		return dist.argmax()
+		return dist.argmin()
 
 	def nav_callback(self, future):
 		future.result()
@@ -175,6 +178,8 @@ class FollowMeActionServer(Node):
 			for ret in msg.results
 		]
 		
+		if not self.init_flag: return
+
 		# initiate the FollowMe via sending NavigateToPose
 		position = None
 		if not self._is_following:
@@ -184,9 +189,8 @@ class FollowMeActionServer(Node):
 			target_id = self._get_target_from_bboxes(bboxes, W, H)
 			
 			if positions[target_id] is None: return
-			# initialize PoseStamped from user's position
 			position = positions[target_id]
-			# ignore if the potential user is too far away
+
 			# if np.linalg.norm(position, 2) > 3: return
 			pose_stamp = self._point_to_posestamp(position, msg.image.header)
 			if pose_stamp is None: return
@@ -202,31 +206,33 @@ class FollowMeActionServer(Node):
 			
 			self._is_following = True
 			self._is_dirty = True
+			all_features, visible_part = self.tracker.process_crop(
+				image, bboxes, kpts, confs
+			)
+			self.tracker.update(
+				target_id, 
+				all_features.cpu().detach(),
+				visible_part.cpu().detach()
+			)
 		else:  # Either extract new location from bboxes
 			if len(bboxes) > 0:
 				all_features, visible_part = self.tracker.process_crop(
 					image, bboxes, kpts, confs
 				)
 				target_id = self.tracker.identify(
-					all_features.cpu().detach(),#.numpy(),
-					visible_part.cpu().detach(),#.numpy()
-				)
-
-				# not good enough re-identification
-				# if avg_scores[target_id] > 0.5:
-				# 	self.get_logger().warn(f"Insufficient re-identification confidence {avg_scores[target_id]}")
-				# 	return
-
-				position = positions[target_id]
-				if position is not None:
-					self.kf.update(np.array([[position[0]], [position[2]]]))
-					self._is_dirty = True
-
-				self.tracker.update(
-					target_id, 
 					all_features.cpu().detach(),
-					visible_part.cpu().detach()
+					visible_part.cpu().detach(),
 				)
+				if target_id is not None: 
+					self.tracker.update(
+						target_id, 
+						all_features.cpu().detach(),
+						visible_part.cpu().detach()
+					)
+					position = positions[target_id]
+					if position is not None:
+						self.kf.update(np.array([[position[0]], [position[2]]]))
+						self._is_dirty = True
 
 			# or get predicted position
 			# if position is None and self._is_dirty:
@@ -234,13 +240,13 @@ class FollowMeActionServer(Node):
 			# 	x_pred, z_pred = self.kf.x[0, 0], self.kf.x[1, 0]
 			# 	position = [x_pred, 0., z_pred]
 			# 	self._is_dirty = False
-			if position is None:
+			if position is not None:
+				pose_stamp = self._point_to_posestamp(position, msg.image.header)
+
+				if pose_stamp is None: return
+				self.update_publisher.publish(pose_stamp)
+			else:
 				return
-
-			pose_stamp = self._point_to_posestamp(position, msg.image.header)
-
-			if pose_stamp is None: return
-			self.update_publisher.publish(pose_stamp)
 
 		self.pose_publisher.publish(pose_stamp)
 

@@ -1,9 +1,10 @@
 <launch>
     <!-- Declare the use_sim_time argument -->
-    <arg name="use_sim_time" default="false" description="Use simulation time"/>
+    <let name="use_sim_time" value="false"/>
 
     <include file="$(find-pkg-share nav2_bringup)/launch/navigation_launch.py">
-        <param name="use_sim_time" value="false"/>
-        <arg name="params_file" value="$(find-pkg-share follow_me_launch)/config/my_nav2_params.yaml"/>
+        <arg name="use_sim_time" value="$(var use_sim_time)"/>
+        <arg name="params_file" value="$(find-pkg-share follow_me)/config/my_nav2_params.yaml"/>
+        <!-- <arg name="inflation_layer.inflation_radius" value="0.3" /> -->
     </include>
 </launch>

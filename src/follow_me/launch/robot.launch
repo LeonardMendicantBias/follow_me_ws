@@ -35,7 +35,7 @@
         <param name="use_sim_time" value="$(var use_sim_time)"/>
         <param 
             name="robot_description"
-            value="$(command 'xacro $(find-pkg-share follow_me_launch)/urdf/$(var robot_description_file)')"
+            value="$(command 'xacro $(find-pkg-share follow_me)/urdf/$(var robot_description_file)')"
         />
     </node>
 
