@@ -7,7 +7,7 @@ from rclpy.node import Node
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from tf2_ros import Buffer, TransformListener, TransformException
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, LaserScan
 from vision_msgs.msg import BoundingBox2D, Point2D
 from geometry_msgs.msg import Pose2D, Point
 import sensor_msgs_py.point_cloud2 as pc2
@@ -78,9 +78,9 @@ class YoloPublisher(Node):
 
       self.info_sub = Subscriber(self, CameraInfo, '/camera/camera/color/camera_info')
       self.image_sub = Subscriber(self, Image, '/camera/camera/color/image_raw')
-      self.depth_sub = Subscriber(self, Image, '/camera/camera/depth/image_rect_raw')
+      self.scan_sub = Subscriber(self, LaserScan, '/scan')
       self.ts = ApproximateTimeSynchronizer(
-         [self.info_sub, self.image_sub, self.depth_sub],
+         [self.info_sub, self.image_sub, self.scan_sub],
          queue_size=1, slop=0.1
       )
       self.ts.registerCallback(self.synced_callback)
@@ -159,6 +159,8 @@ class YoloPublisher(Node):
       self.kpt_color = pose_palette[[16, 16, 16, 16, 16, 0, 0, 0, 0, 0, 0, 9, 9, 9, 9, 9, 9]]
       self.last_marker_count = 0
 
+      self.is_ran = False
+
    def visualize_yolo(self, image, result):
       if len(result.boxes) == 0:
          imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'bgr8')
@@ -199,36 +201,21 @@ class YoloPublisher(Node):
       imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'bgr8')
       self.visualize_publisher.publish(imgMsg)
 
-   def visualize_marker(self):
-      pass
-
-   def _filter_depth(self, join_depth, min_bound=25, max_bound=75):
-      Q1 = np.percentile(join_depth, min_bound)
-      Q3 = np.percentile(join_depth, max_bound)
-      IQR = Q3 - Q1
-
-      # Define bounds for outliers
-      lower_bound = Q1 - 1.5 * IQR
-      upper_bound = Q3 + 1.5 * IQR
-
-      # Filter out outliers
-      ids = (join_depth >= lower_bound) & (join_depth <= upper_bound)
-      filtered_data = join_depth[ids]
-      return filtered_data, ids
-
    def synced_callback(self,
       info_msg: CameraInfo,
       rgb_msg: Image,
-      depth_msg: Image
+      scan_msg: LaserScan,
    ):
-      self.cam_model.fromCameraInfo(info_msg)
-
+      if self.is_ran:
+         return
+      
+      print(scan_msg)
+      self.is_ran = True
       image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
-      depth_image = self.cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough")  # (480, 848)
-      _depth_image = cv2.resize(depth_image, (image.shape[1], image.shape[0]))
       response = ResultArray()
       response.image = rgb_msg
 
+      # perform AI functions
       results = self.model(
          image, self.img_size,
          conf=self.get_parameter('conf_threshold').get_parameter_value().double_value,
@@ -237,106 +224,29 @@ class YoloPublisher(Node):
       result = list(results)[0]
 
       if len(result) == 0:
-         print("here")
          self.result_publisher.publish(response)
          return
 
       xywh = result.boxes.xywh.cpu().numpy()
       conf = result.keypoints.conf.cpu().numpy()
       xy = result.keypoints.xy.cpu().numpy()
-      _xy = np.trunc(xywh[:, :2]).astype(int)
-      distances = _depth_image[_xy[:, 1], _xy[:, 0]]
 
-      rays = np.array([self.cam_model.projectPixelTo3dRay((u, v)) for u, v in _xy])
-      points_3d = rays * distances[:, np.newaxis] / 1000.0
+      # extract positions of detected humans from LaserScan
+      # 1/ convert PCD from velodyne to camera frame
+      # try:
+      #    # Transform the ray into the scan frame
+      #    point_scan = self.tf_buffer.transform(point_cam, self.scan_frame, rclpy.time.Time())
+      # except Exception as e:
+      #    self.get_logger().error(f"TF transform failed: {e}")
+      #    return None
 
-      try:
-         transform = self.tf_buffer.lookup_transform(
-            rgb_msg.header.frame_id,
-            depth_msg.header.frame_id,
-            rgb_msg.header.stamp,
-            timeout=rclpy.duration.Duration(seconds=0.2)
-         )
-         t = transform.transform.translation
-         translation = np.array([t.x, t.y, t.z])
-         q = transform.transform.rotation
-         quaternion = [q.x, q.y, q.z, q.w]
-         rotation_matrix = tf_transformations.quaternion_matrix(quaternion)[:3, :3]
-      except Exception as e:
-         self.get_logger().warn(f"Skip due to missing transformation: {e}")
-         return
-
-      _time_stamp = self.get_clock().now().to_msg()
-      positions = (rotation_matrix @ points_3d.T).T + translation
-      
-      self.visualize_yolo(image, result)
-
-      markers = MarkerArray()
-      for i in range(len(result.boxes.xywh), self.last_marker_count):
-         marker = Marker()
-         marker.header.frame_id = depth_msg.header.frame_id
-         marker.header.stamp = _time_stamp
-         marker.ns = 'cylinders'
-         marker.id = i
-         marker.action = Marker.DELETE
-         markers.markers.append(marker)
-      
-      if len(result.boxes) == 0:
-         self.last_marker_count = 0
-         self.result_publisher.publish(response)
-         return
-      self.get_logger().info(f"detecting {len(result.boxes)} humans")
-
-      for idx_, (bbox, kpts, c, pos) in enumerate(zip(xywh, xy, conf, positions)):
-         kpts = kpts.cpu().tolist()
-         x, y, w, h = bbox.cpu().tolist()
-         ret = YoloResult()
-         ret.bbox.center.position.x = x
-         ret.bbox.center.position.y = y
-         ret.bbox.center.theta = 0.
-         ret.bbox.size_x = w
-         ret.bbox.size_y = h
-         ret.kpts = [
-            Point2D(x=kpt[0], y=kpt[1])
-            for kpt in kpts
-         ]
-         ret.confidences = [conf for conf in c.cpu().tolist()]
-         ret.position = Point(x=pos[0], y=pos[1], z=pos[2])
-         response.results.append(ret)
-
-         marker = Marker()
-         marker.header.frame_id = depth_msg.header.frame_id
-         marker.header.stamp = _time_stamp
-         
-         marker.ns = 'cylinders'
-         marker.id = idx_
-         marker.type = Marker.CUBE
-         marker.action = Marker.ADD
-         marker.pose.position.x = pos[0]
-         marker.pose.position.y = pos[1]
-         marker.pose.position.z = pos[2]
-         marker.pose.orientation.w = 1.0  # No rotation
-         marker.scale.x = 0.2  # diameter in x
-         marker.scale.y = -1.0  # diameter in y
-         marker.scale.z = 0.2  # height
-         marker.lifetime.sec = 0  # 0 means forever
-
-         marker.color = ColorRGBA(r=0.1, g=0.8, b=0.1, a=0.5)
-         markers.markers.append(marker)
-      self.last_marker_count = len(result.boxes.xywh)
-
-      self.marker_publisher.publish(markers)
-      self.result_publisher.publish(response)
-      # publish result
+      #/ 2/ 
 
 
 def main(args=None):
    rclpy.init(args=args)
 
    publisher = YoloPublisher()
-   publisher.set_parameters([
-      rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, True)
-   ])
 
    rclpy.spin(publisher)
 
