@@ -8,13 +8,13 @@ from message_filters import Subscriber, ApproximateTimeSynchronizer
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from sensor_msgs.msg import Image, CameraInfo
-from vision_msgs.msg import BoundingBox2D, Point2D
-from geometry_msgs.msg import Pose2D, Point
+from vision_msgs.msg import BoundingBox2D, Pose2D, Point2D
+from geometry_msgs.msg import Point, Pose, Vector3
 import sensor_msgs_py.point_cloud2 as pc2
 import tf_transformations
 from image_geometry import PinholeCameraModel
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import ColorRGBA
+from std_msgs.msg import ColorRGBA, Header
 
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
@@ -24,35 +24,6 @@ from ultralytics import YOLO
 import open3d as o3d
 
 from follow_me_msgs.msg import ResultArray, YoloResult
-
-
-def transform_point(point_3d_np, transform):
-   """
-   Transform a 3D point using a TF TransformStamped.
-   
-   Args:
-      point_3d_np: numpy array [x, y, z]
-      transform: TransformStamped (from tf2_ros.Buffer)
-   
-   Returns:
-      Transformed point as numpy array [x, y, z]
-   """
-   # Extract translation
-   t = transform.transform.translation
-   translation = np.array([t.x, t.y, t.z])
-
-   # Extract rotation (quaternion)
-   q = transform.transform.rotation
-   quaternion = [q.x, q.y, q.z, q.w]
-
-   # Rotate point
-   rotation_matrix = tf_transformations.quaternion_matrix(quaternion)[:3, :3]
-   rotated_point = rotation_matrix @ point_3d_np
-
-   # Apply translation
-   transformed_point = rotated_point + translation
-
-   return transformed_point
 
 
 class YoloPublisher(Node):
@@ -73,14 +44,16 @@ class YoloPublisher(Node):
          self.get_parameter('img_width').get_parameter_value().integer_value
       ]
 
-      self.cam_model = PinholeCameraModel()
+      self.rgb_model = PinholeCameraModel()
+      self.depth_model = PinholeCameraModel()
       self.cv_bridge = CvBridge()
 
-      self.info_sub = Subscriber(self, CameraInfo, '/camera/camera/color/camera_info')
       self.image_sub = Subscriber(self, Image, '/camera/camera/color/image_raw')
-      self.depth_sub = Subscriber(self, Image, '/camera/camera/depth/image_rect_raw')
+      self.depth_sub = Subscriber(self, Image, '/camera/camera/align_depth_to_color/image_raw')
+      self.rgb_info_sub = Subscriber(self, CameraInfo, '/camera/camera/color/camera_info')
+      self.depth_info_sub = Subscriber(self, CameraInfo, '/camera/camera/depth/camera_info')
       self.ts = ApproximateTimeSynchronizer(
-         [self.info_sub, self.image_sub, self.depth_sub],
+         [self.image_sub, self.depth_sub, self.rgb_info_sub, self.depth_info_sub],
          queue_size=1, slop=0.1
       )
       self.ts.registerCallback(self.synced_callback)
@@ -161,7 +134,8 @@ class YoloPublisher(Node):
 
    def visualize_yolo(self, image, result):
       if len(result.boxes) == 0:
-         imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'bgr8')
+         # imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'bgr8')
+         imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'passthrough')
          self.visualize_publisher.publish(imgMsg)
          return
       
@@ -196,38 +170,86 @@ class YoloPublisher(Node):
                lineType=cv2.LINE_AA,
             )
 
-      imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'bgr8')
+      # imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'bgr8')
+      imgMsg = self.cv_bridge.cv2_to_imgmsg(image, 'passthrough')
       self.visualize_publisher.publish(imgMsg)
 
-   def visualize_marker(self):
+   def visualize_marker(self,
+      frame_id,
+      positions=[]
+   ):
+      _time_stamp = self.get_clock().now().to_msg()
+      
+      markers = MarkerArray()
+      markers.markers = [
+         Marker(
+            header=Header(frame_id=frame_id, stamp=_time_stamp),
+            ns="yolo", id=idx,
+            type = Marker.CUBE, action=Marker.ADD,
+            pose=Pose(position=Point(x=pos[0], y=pos[1], z=pos[2])),
+            scale=Vector3(x=0.2, y=-1.0, z=0.2),
+            color=ColorRGBA(r=0.1, g=0.8, b=0.1, a=0.5)
+         )
+         for idx, pos in enumerate(positions)
+      ]
+      if self.last_marker_count > len(positions):
+         markers.markers.extend([
+            Marker(
+               header=Header(frame_id=frame_id, stamp=_time_stamp),
+               ns="yolo", id=idx+len(positions),
+               action=Marker.DELETE
+            )
+            for idx in range(len(positions), self.last_marker_count)
+         ])
+
+      self.last_marker_count = len(positions)
+      self.marker_publisher.publish(markers)
+
+   def report(self,
+      img_msg: Image,
+      bboxes=[],
+      kpts=[],
+      confs=[],
+      positions=[]
+   ):
+      response = ResultArray()
+      response.image = img_msg
+      response.results = [
+         YoloResult(
+            bbox=BoundingBox2D(
+               center=Pose2D(position=Point2D(x=float(bbox[0]), y=float(bbox[1]))),
+               size_x=float(bbox[2]), size_y=float(bbox[3])
+            ),
+            position=Point(x=pos[0], y=pos[1], z=pos[2]),
+            # kpts=[Point2D(x=float(kpt[0]), y=float(kpt[1])) for kpt in kpts.tolist()],
+            kpts=[Point2D(x=k[0], y=k[1]) for k in kpt.tolist()],
+            confidences=conf.tolist(),
+         )
+         for bbox, kpt, conf, pos in zip(bboxes, kpts, confs, positions)
+      ]
+
+      self.result_publisher.publish(response)
+
+   def process_sensing_data(self,
+      rgb_msg: Image,
+      depth_msg: Image,
+      rgb_info_msg: CameraInfo,
+      depth_info_msg: CameraInfo
+   ):
       pass
 
-   def _filter_depth(self, join_depth, min_bound=25, max_bound=75):
-      Q1 = np.percentile(join_depth, min_bound)
-      Q3 = np.percentile(join_depth, max_bound)
-      IQR = Q3 - Q1
-
-      # Define bounds for outliers
-      lower_bound = Q1 - 1.5 * IQR
-      upper_bound = Q3 + 1.5 * IQR
-
-      # Filter out outliers
-      ids = (join_depth >= lower_bound) & (join_depth <= upper_bound)
-      filtered_data = join_depth[ids]
-      return filtered_data, ids
-
    def synced_callback(self,
-      info_msg: CameraInfo,
       rgb_msg: Image,
-      depth_msg: Image
+      depth_msg: Image,
+      rgb_info_msg: CameraInfo,
+      depth_info_msg: CameraInfo,
    ):
-      self.cam_model.fromCameraInfo(info_msg)
+      self.rgb_model.fromCameraInfo(rgb_info_msg)
+      self.depth_model.fromCameraInfo(depth_info_msg)
 
       image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
       depth_image = self.cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough")  # (480, 848)
       _depth_image = cv2.resize(depth_image, (image.shape[1], image.shape[0]))
-      response = ResultArray()
-      response.image = rgb_msg
 
       results = self.model(
          image, self.img_size,
@@ -235,18 +257,18 @@ class YoloPublisher(Node):
          verbose=False
       )
       result = list(results)[0]
+      self.get_logger().info(f"detecting {len(result.boxes)} humans")
 
       if len(result) == 0:
-         print("here")
-         self.result_publisher.publish(response)
+         self.report(rgb_msg)
+         self.visualize_yolo(_depth_image, result)
          return
 
-      xywh = result.boxes.xywh.cpu().numpy()
-      conf = result.keypoints.conf.cpu().numpy()
-      xy = result.keypoints.xy.cpu().numpy()
-      _xy = np.trunc(xywh[:, :2]).astype(int)
+      bboxes = result.boxes.xywh.cpu().numpy().astype(float)
+      confs = result.keypoints.conf.cpu().numpy().astype(float)
+      kpts = result.keypoints.xy.cpu().numpy().astype(float)
+      _xy = np.trunc(bboxes[:, :2]).astype(int)
       distances = _depth_image[_xy[:, 1], _xy[:, 0]]
-
       rays = np.array([self.cam_model.projectPixelTo3dRay((u, v)) for u, v in _xy])
       points_3d = rays * distances[:, np.newaxis] / 1000.0
 
@@ -266,68 +288,11 @@ class YoloPublisher(Node):
          self.get_logger().warn(f"Skip due to missing transformation: {e}")
          return
 
-      _time_stamp = self.get_clock().now().to_msg()
       positions = (rotation_matrix @ points_3d.T).T + translation
       
-      self.visualize_yolo(image, result)
-
-      markers = MarkerArray()
-      for i in range(len(result.boxes.xywh), self.last_marker_count):
-         marker = Marker()
-         marker.header.frame_id = depth_msg.header.frame_id
-         marker.header.stamp = _time_stamp
-         marker.ns = 'cylinders'
-         marker.id = i
-         marker.action = Marker.DELETE
-         markers.markers.append(marker)
-      
-      if len(result.boxes) == 0:
-         self.last_marker_count = 0
-         self.result_publisher.publish(response)
-         return
-      self.get_logger().info(f"detecting {len(result.boxes)} humans")
-
-      for idx_, (bbox, kpts, c, pos) in enumerate(zip(xywh, xy, conf, positions)):
-         kpts = kpts.cpu().tolist()
-         x, y, w, h = bbox.cpu().tolist()
-         ret = YoloResult()
-         ret.bbox.center.position.x = x
-         ret.bbox.center.position.y = y
-         ret.bbox.center.theta = 0.
-         ret.bbox.size_x = w
-         ret.bbox.size_y = h
-         ret.kpts = [
-            Point2D(x=kpt[0], y=kpt[1])
-            for kpt in kpts
-         ]
-         ret.confidences = [conf for conf in c.cpu().tolist()]
-         ret.position = Point(x=pos[0], y=pos[1], z=pos[2])
-         response.results.append(ret)
-
-         marker = Marker()
-         marker.header.frame_id = depth_msg.header.frame_id
-         marker.header.stamp = _time_stamp
-         
-         marker.ns = 'cylinders'
-         marker.id = idx_
-         marker.type = Marker.CUBE
-         marker.action = Marker.ADD
-         marker.pose.position.x = pos[0]
-         marker.pose.position.y = pos[1]
-         marker.pose.position.z = pos[2]
-         marker.pose.orientation.w = 1.0  # No rotation
-         marker.scale.x = 0.2  # diameter in x
-         marker.scale.y = -1.0  # diameter in y
-         marker.scale.z = 0.2  # height
-         marker.lifetime.sec = 0  # 0 means forever
-
-         marker.color = ColorRGBA(r=0.1, g=0.8, b=0.1, a=0.5)
-         markers.markers.append(marker)
-      self.last_marker_count = len(result.boxes.xywh)
-
-      self.marker_publisher.publish(markers)
-      self.result_publisher.publish(response)
-      # publish result
+      self.report(rgb_msg, bboxes, kpts, confs, positions)
+      self.visualize_yolo(_depth_image, result)
+      self.visualize_marker(rgb_msg.header.frame_id, positions)
 
 
 def main(args=None):

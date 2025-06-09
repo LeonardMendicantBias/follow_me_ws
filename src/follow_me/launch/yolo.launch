@@ -28,6 +28,7 @@
 
   <!-- RGB camera -->
   <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">
+    <arg name="align_depth.enable" value="true" />
     <arg name="depth_module.depth_profile" value="848x480x15" />
     <arg name="rgb_camera.color_profile" value="$(var width)x$(var height)x15" />
   </include>
