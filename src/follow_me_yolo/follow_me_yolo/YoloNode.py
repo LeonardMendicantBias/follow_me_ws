@@ -45,15 +45,15 @@ class YoloPublisher(Node):
       ]
 
       self.rgb_model = PinholeCameraModel()
-      self.depth_model = PinholeCameraModel()
+      # self.depth_model = PinholeCameraModel()
       self.cv_bridge = CvBridge()
 
       self.image_sub = Subscriber(self, Image, '/camera/camera/color/image_raw')
-      self.depth_sub = Subscriber(self, Image, '/camera/camera/align_depth_to_color/image_raw')
+      self.depth_sub = Subscriber(self, Image, '/camera/camera/aligned_depth_to_color/image_raw')
       self.rgb_info_sub = Subscriber(self, CameraInfo, '/camera/camera/color/camera_info')
-      self.depth_info_sub = Subscriber(self, CameraInfo, '/camera/camera/depth/camera_info')
+      # self.depth_info_sub = Subscriber(self, CameraInfo, '/camera/camera/depth/camera_info')
       self.ts = ApproximateTimeSynchronizer(
-         [self.image_sub, self.depth_sub, self.rgb_info_sub, self.depth_info_sub],
+         [self.image_sub, self.depth_sub, self.rgb_info_sub], #, self.depth_info_sub],
          queue_size=1, slop=0.1
       )
       self.ts.registerCallback(self.synced_callback)
@@ -230,22 +230,14 @@ class YoloPublisher(Node):
 
       self.result_publisher.publish(response)
 
-   def process_sensing_data(self,
-      rgb_msg: Image,
-      depth_msg: Image,
-      rgb_info_msg: CameraInfo,
-      depth_info_msg: CameraInfo
-   ):
-      pass
-
    def synced_callback(self,
       rgb_msg: Image,
       depth_msg: Image,
       rgb_info_msg: CameraInfo,
-      depth_info_msg: CameraInfo,
+      # depth_info_msg: CameraInfo,
    ):
       self.rgb_model.fromCameraInfo(rgb_info_msg)
-      self.depth_model.fromCameraInfo(depth_info_msg)
+      # self.depth_model.fromCameraInfo(depth_info_msg)
 
       image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
       depth_image = self.cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough")  # (480, 848)
@@ -264,13 +256,23 @@ class YoloPublisher(Node):
          self.visualize_yolo(_depth_image, result)
          return
 
+      # (K, .)
       bboxes = result.boxes.xywh.cpu().numpy().astype(float)
       confs = result.keypoints.conf.cpu().numpy().astype(float)
-      kpts = result.keypoints.xy.cpu().numpy().astype(float)
-      _xy = np.trunc(bboxes[:, :2]).astype(int)
-      distances = _depth_image[_xy[:, 1], _xy[:, 0]]
-      rays = np.array([self.cam_model.projectPixelTo3dRay((u, v)) for u, v in _xy])
-      points_3d = rays * distances[:, np.newaxis] / 1000.0
+      kpts = result.keypoints.xy.cpu().numpy().astype(float)  # (K, 17, 2)
+      _xy = np.trunc(kpts).astype(int)
+      K, N = kpts.shape[:2]
+      
+      distances = _depth_image[_xy[..., 1], _xy[..., 0]]
+      is_kpts_vis = confs > self.conf_thres
+      
+      # _xy = np.trunc(bboxes[:, :2]).astype(int)
+      # distances = _depth_image[_xy[:, 1], _xy[:, 0]]
+      rays = np.array([
+         self.rgb_model.projectPixelTo3dRay((u, v))
+         for u, v in _xy.reshape(K*N, -1)
+      ]).reshape(K, N, -1)  # (K, N, 3)
+      points_3d = rays * distances[..., None] / 1000.0
 
       try:
          transform = self.tf_buffer.lookup_transform(
@@ -288,7 +290,9 @@ class YoloPublisher(Node):
          self.get_logger().warn(f"Skip due to missing transformation: {e}")
          return
 
-      positions = (rotation_matrix @ points_3d.T).T + translation
+      positions = (rotation_matrix @ points_3d.reshape(K*N, -1).T).T + translation
+      positions = positions.reshape(K, N, -1) * is_kpts_vis[..., None]
+      positions = positions.sum(axis=-2) / is_kpts_vis.sum(axis=-1, keepdims=True)
       
       self.report(rgb_msg, bboxes, kpts, confs, positions)
       self.visualize_yolo(_depth_image, result)
@@ -299,9 +303,6 @@ def main(args=None):
    rclpy.init(args=args)
 
    publisher = YoloPublisher()
-   publisher.set_parameters([
-      rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, True)
-   ])
 
    rclpy.spin(publisher)
 
