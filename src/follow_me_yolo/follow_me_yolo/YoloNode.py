@@ -253,7 +253,8 @@ class YoloPublisher(Node):
 
       if len(result) == 0:
          self.report(rgb_msg)
-         self.visualize_yolo(_depth_image, result)
+         # self.visualize_yolo(_depth_image, result)
+         self.visualize_yolo(image, result)
          return
 
       # (K, .)
@@ -261,6 +262,7 @@ class YoloPublisher(Node):
       confs = result.keypoints.conf.cpu().numpy().astype(float)
       kpts = result.keypoints.xy.cpu().numpy().astype(float)  # (K, 17, 2)
       _xy = np.trunc(kpts).astype(int)
+      # _xy = _xy.clip()
       K, N = kpts.shape[:2]
       
       distances = _depth_image[_xy[..., 1], _xy[..., 0]]
@@ -295,7 +297,8 @@ class YoloPublisher(Node):
       positions = positions.sum(axis=-2) / is_kpts_vis.sum(axis=-1, keepdims=True)
       
       self.report(rgb_msg, bboxes, kpts, confs, positions)
-      self.visualize_yolo(_depth_image, result)
+      # self.visualize_yolo(_depth_image, result)
+      self.visualize_yolo(image, result)
       self.visualize_marker(rgb_msg.header.frame_id, positions)
 
 

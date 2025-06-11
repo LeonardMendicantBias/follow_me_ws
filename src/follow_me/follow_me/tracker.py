@@ -156,6 +156,9 @@ class Tracker:
 			np.sum(scores, axis=0),
 			_visible_part.sum(-1).numpy()
 		)
+		if _visible_part.sum() == 0:
+			print(_visible_part)
+
 		target_id = np.argmax(avg_scores)
 		# print(np.array(scores), avg_scores[target_id])
 		if avg_scores[target_id] < threshold: return None

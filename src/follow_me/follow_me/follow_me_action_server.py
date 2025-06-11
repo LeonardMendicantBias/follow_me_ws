@@ -1,5 +1,5 @@
 import time
-
+from typing import List
 import rclpy
 from rclpy.action import ActionServer, ActionClient, CancelResponse, GoalResponse
 # from rclpy.callback_groups import ReentrantCallbackGroup
@@ -34,7 +34,7 @@ from torch import nn
 from torchvision.models import resnet18 as resnet, ResNet18_Weights
 from torchvision import transforms
 
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import ExtendedKalmanFilter, KalmanFilter
 
 from follow_me.tracker import Tracker
 
@@ -84,13 +84,13 @@ class FollowMeActionServer(Node):
 		
 		self._reset_variable()
 
-		self.marker_publisher = self.create_publisher(
-			MarkerArray,
-			'/action/marker', 1
-		)
 		self.pose_publisher = self.create_publisher(
 			PoseStamped,
 			'/action/posestamp', 1
+		)
+		self.kalman_publisher = self.create_publisher(
+			PoseStamped,
+			'/action/kalman', 1
 		)
 
 	def _reset_variable(self):
@@ -99,47 +99,33 @@ class FollowMeActionServer(Node):
 		self.init_flag = False
 		self._is_following = False
 		self.tracker.reset()
+		self._last_poses: List[Pose] = []
 		self.kf = KalmanFilter(dim_x=4, dim_z=2)
 
-		# State transition matrix (x, y, vx, vy)
+		self.kf.x = np.array([0, 0, 0, 0])
+
+		# Covariances
 		self.kf.F = np.array([
 			[1, 0, self.dt, 0],
 			[0, 1, 0, self.dt],
-			[0, 0, 1, 0],
-			[0, 0, 0, 1]
+			[0, 0, 1,  0],
+			[0, 0, 0,  1]
 		])
-
-		# Measurement function (we observe x and y)
 		self.kf.H = np.array([
 			[1, 0, 0, 0],
 			[0, 1, 0, 0]
 		])
-		self.kf.P *= 1000.
-		self.kf.R *= 0.1
-		self.kf.Q = np.eye(4) * 0.01
-		self.kf.x = np.zeros((4, 1))
+		self.kf.P *= 500.
+		self.kf.R *= 5.
 
-	def _point_to_posestamp(self,
-		dest: Point,
-		header: Header
-	) -> PoseStamped:
-		# dest = dest.cpu().numpy()
+	def _position_to_pose(self, dest: Point) -> Pose:
 		dest = Point(x=float(dest[0]), y=0., z=float(dest[2]))
 		
-		pose = Pose()
 		yaw = math.atan2(dest.z, dest.x)
 		q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
-
-		# Assign orientation
-		pose.position = dest  # (X: Right, Y: Down, Z: Forward)
-		pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
-
-		return PoseStamped(
-			header=Header(
-				frame_id=header.frame_id,
-				stamp=self.get_clock().now().to_msg()
-			),
-			pose=pose
+		return Pose(
+			position=dest,
+			orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 		)
 	
 	def _get_target_from_bboxes(self, bboxes, W, H):
@@ -151,7 +137,65 @@ class FollowMeActionServer(Node):
 
 	def nav_callback(self, future):
 		future.result()
+		self.get_logger().info(f"first destination")
 		self._is_following = True
+
+	def _get_init_pose(self, image, bboxes, positions) -> Pose:
+		H, W, _ = image.shape
+		dist = np.array([
+			abs(bbox[0]-W/2) + abs(bbox[1]-H/2)
+			for bbox in bboxes
+		])
+		target_id = dist.argmin()
+		
+		if (position:=positions[target_id]) is None: return
+
+		# dest = Point(x=float(position[0]), y=0., z=float(position[2]))
+		# yaw = math.atan2(dest.z, dest.x)
+		self.kf.x = np.array([position[0], position[2], 0, 0])
+		return target_id, self._position_to_pose(position)
+
+	def _reidentify(self, image, bboxes, kpts, confs, positions):
+		all_features, visible_part = self.tracker.process_crop(
+			image, bboxes, kpts, confs
+		)
+		target_id = self.tracker.identify(
+			all_features.cpu().detach(),
+			visible_part.cpu().detach(),
+		)
+		if target_id is not None: 
+			self.tracker.update(
+				target_id, 
+				all_features.cpu().detach(),
+				visible_part.cpu().detach()
+			)
+			position = positions[target_id]
+			if position is not None:
+				self._is_dirty = True
+				z = np.array([position[0], position[2]])
+				self.kf.update(z)
+				return self._position_to_pose(position)
+
+	def _extrapolate(self) -> Pose:
+		x_pos, y_pos, v_x, v_y = self.kf.x
+		dest = Point(x=float(x_pos), y=0., z=float(y_pos))
+		_last_pose = self._last_poses[-min(10, len(self._last_poses))]
+
+		yaw = math.atan2(
+			dest.z - _last_pose.position.z,
+			dest.x - _last_pose.position.x,
+		)
+		q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
+		return Pose(
+			position=Point(x=float(x_pos), y=0., z=float(y_pos)),
+			orientation=Quaternion(x=q[0], y=q[1], z=q[2], w=q[3]),
+			# orientation=Quaternion(x=0., y=0., z=0., w=q[3]),
+		)
+
+	def _update_last_pose(self, pose):
+		self._last_poses.append(pose)
+		if len(self._last_poses) > 10:
+			self._last_poses.pop(0)
 
 	def yolo_callback(self, msg: ResultArray):
 		image = self.cv_bridge.imgmsg_to_cv2(msg.image, "bgr8")
@@ -181,31 +225,32 @@ class FollowMeActionServer(Node):
 		if not self.init_flag: return
 
 		# initiate the FollowMe via sending NavigateToPose
-		position = None
+		self.kf.predict()
+
+		pose = None
+		_header = Header(
+			frame_id=msg.image.header.frame_id,
+			stamp=self.get_clock().now().to_msg()
+		)
 		if not self._is_following:
 			if len(bboxes) == 0: return
 
-			H, W, _ = image.shape
-			target_id = self._get_target_from_bboxes(bboxes, W, H)
-			
-			if positions[target_id] is None: return
-			position = positions[target_id]
+			self._is_following = True
+			self._is_dirty = True
 
-			# if np.linalg.norm(position, 2) > 3: return
-			pose_stamp = self._point_to_posestamp(position, msg.image.header)
-			if pose_stamp is None: return
+			target_id, pose = self._get_init_pose(image, bboxes, positions)
+			if pose is None: return
 
+			self._update_last_pose(pose)
 			goal_msg = NavigateToPose.Goal()
-			goal_msg.pose = pose_stamp
+			goal_msg.pose = PoseStamped(header=_header, pose=pose)
+			
 			if not self.nav_client.wait_for_server(timeout_sec=1.0):
 				self.get_logger().info(f"Navigation server is not online!")
 				return FollowMe.Result()
 			nav_future = self.nav_client.send_goal_async(goal_msg)
 			nav_future.add_done_callback(self.nav_callback)
-			self.get_logger().info(f"first destination")
 			
-			self._is_following = True
-			self._is_dirty = True
 			all_features, visible_part = self.tracker.process_crop(
 				image, bboxes, kpts, confs
 			)
@@ -215,60 +260,19 @@ class FollowMeActionServer(Node):
 				visible_part.cpu().detach()
 			)
 		else:  # Either extract new location from bboxes
-			if len(bboxes) > 0:
-				all_features, visible_part = self.tracker.process_crop(
-					image, bboxes, kpts, confs
-				)
-				target_id = self.tracker.identify(
-					all_features.cpu().detach(),
-					visible_part.cpu().detach(),
-				)
-				if target_id is not None: 
-					self.tracker.update(
-						target_id, 
-						all_features.cpu().detach(),
-						visible_part.cpu().detach()
-					)
-					position = positions[target_id]
-					if position is not None:
-						self.kf.update(np.array([[position[0]], [position[2]]]))
-						self._is_dirty = True
-
-			# or get predicted position
-			# if position is None and self._is_dirty:
-			# 	self.kf.predict()
-			# 	x_pred, z_pred = self.kf.x[0, 0], self.kf.x[1, 0]
-			# 	position = [x_pred, 0., z_pred]
-			# 	self._is_dirty = False
-			if position is not None:
-				pose_stamp = self._point_to_posestamp(position, msg.image.header)
-
-				if pose_stamp is None: return
-				self.update_publisher.publish(pose_stamp)
-			else:
-				return
-
-		self.pose_publisher.publish(pose_stamp)
-
-		markers = MarkerArray()
-		marker = Marker()
-		marker.header.frame_id = pose_stamp.header.frame_id
-		marker.header.stamp = self.get_clock().now().to_msg()
-
-		marker.ns = 'cylinders'
-		marker.id = 0
-		marker.type = Marker.CUBE
-		marker.action = Marker.ADD
-		marker.pose.position = pose_stamp.pose.position
-		marker.pose.orientation = pose_stamp.pose.orientation
-		marker.scale.x = 0.2 # diameter in x
-		marker.scale.y = 0.2  # diameter in y
-		marker.scale.z = 1.0  
-		marker.lifetime.sec = 0  # 0 means forever
-
-		marker.color = ColorRGBA(r=1.0, g=0.8, b=0.1, a=0.5)
-		markers.markers.append(marker)
-		self.marker_publisher.publish(markers)
+			pose = self._reidentify(
+				image, bboxes, kpts, confs, positions
+			) if len(bboxes) > 0 else self._extrapolate()
+			
+			if pose is not None:
+				self._update_last_pose(pose)
+				pose_stamped = PoseStamped(header=_header, pose=pose)
+				self.update_publisher.publish(pose_stamped)
+				self.pose_publisher.publish(pose_stamped)
+			
+		# # Kalman debugging
+		# pose = self._extrapolate()
+		# self.kalman_publisher.publish(PoseStamped(header=_header, pose=pose))
 
 	def goal_callback(self, goal_request):
 		self.init_flag = True
