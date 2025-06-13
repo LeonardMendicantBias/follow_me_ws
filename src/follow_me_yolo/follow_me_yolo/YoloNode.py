@@ -185,21 +185,20 @@ class YoloPublisher(Node):
          Marker(
             header=Header(frame_id=frame_id, stamp=_time_stamp),
             ns="yolo", id=idx,
-            type = Marker.CUBE, action=Marker.ADD,
+            type=Marker.CUBE, action=Marker.ADD,
             pose=Pose(position=Point(x=pos[0], y=pos[1], z=pos[2])),
             scale=Vector3(x=0.2, y=-1.0, z=0.2),
             color=ColorRGBA(r=0.1, g=0.8, b=0.1, a=0.5)
          )
          for idx, pos in enumerate(positions)
       ]
-      if self.last_marker_count > len(positions):
+      if self.last_marker_count != len(positions):
          markers.markers.extend([
             Marker(
                header=Header(frame_id=frame_id, stamp=_time_stamp),
                ns="yolo", id=idx+len(positions),
                action=Marker.DELETE
-            )
-            for idx in range(len(positions), self.last_marker_count)
+            ) for idx in range(len(positions), self.last_marker_count)
          ])
 
       self.last_marker_count = len(positions)
@@ -262,17 +261,25 @@ class YoloPublisher(Node):
       confs = result.keypoints.conf.cpu().numpy().astype(float)
       kpts = result.keypoints.xy.cpu().numpy().astype(float)  # (K, 17, 2)
       _xy = np.trunc(kpts).astype(int)
-      # _xy = _xy.clip()
-      K, N = kpts.shape[:2]
+      _xy = _xy.clip([0, 0], [image.shape[1]-1, image.shape[0]-1])
+      N = kpts.shape[1]
       
       distances = _depth_image[_xy[..., 1], _xy[..., 0]]
       is_kpts_vis = confs > self.conf_thres
+      if not is_kpts_vis.any():
+         self.report(rgb_msg)
+         self.visualize_yolo(image, result)
+         return
       
-      # _xy = np.trunc(bboxes[:, :2]).astype(int)
-      # distances = _depth_image[_xy[:, 1], _xy[:, 0]]
+      distances = distances[is_kpts_vis.max(-1)]
+      K = distances.shape[0]
+      
+      # print(is_kpts_vis)
+      # print(is_kpts_vis.max(-1))
+      # print(_xy.shape, _xy[is_kpts_vis.max(-1)].shape, _xy[is_kpts_vis.max(-1)])
       rays = np.array([
          self.rgb_model.projectPixelTo3dRay((u, v))
-         for u, v in _xy.reshape(K*N, -1)
+         for u, v in _xy[is_kpts_vis.max(-1)].reshape(K*N, -1)
       ]).reshape(K, N, -1)  # (K, N, 3)
       points_3d = rays * distances[..., None] / 1000.0
 
@@ -292,11 +299,15 @@ class YoloPublisher(Node):
          self.get_logger().warn(f"Skip due to missing transformation: {e}")
          return
 
+      _is_kpts_vis = is_kpts_vis[is_kpts_vis.max(-1)]
       positions = (rotation_matrix @ points_3d.reshape(K*N, -1).T).T + translation
-      positions = positions.reshape(K, N, -1) * is_kpts_vis[..., None]
-      positions = positions.sum(axis=-2) / is_kpts_vis.sum(axis=-1, keepdims=True)
+      positions = positions.reshape(K, N, -1) * _is_kpts_vis[..., None]
+      positions = positions.sum(axis=-2) / _is_kpts_vis.sum(axis=-1, keepdims=True)
       
-      self.report(rgb_msg, bboxes, kpts, confs, positions)
+      self.report(rgb_msg,
+         bboxes[is_kpts_vis.max(-1)], kpts[is_kpts_vis.max(-1)],
+         confs[is_kpts_vis.max(-1)], positions#[is_kpts_vis.max(-1)]
+      )
       # self.visualize_yolo(_depth_image, result)
       self.visualize_yolo(image, result)
       self.visualize_marker(rgb_msg.header.frame_id, positions)

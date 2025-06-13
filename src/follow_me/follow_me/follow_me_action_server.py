@@ -193,7 +193,17 @@ class FollowMeActionServer(Node):
 		)
 
 	def _update_last_pose(self, pose):
-		self._last_poses.append(pose)
+		if len(self._last_poses) == 0:
+			self._last_poses.append(pose)
+		else:
+			_last_pose = self._last_poses[-1]
+			# print(_last_pose)
+			dist = np.linalg.norm([
+				_last_pose.position.x - pose.position.x,
+				_last_pose.position.z - pose.position.z,
+			])
+			if dist > 0.025:
+				self._last_poses.append(pose)
 		if len(self._last_poses) > 10:
 			self._last_poses.pop(0)
 
@@ -221,6 +231,7 @@ class FollowMeActionServer(Node):
 			[ret.position.x, ret.position.y, ret.position.z]
 			for ret in msg.results
 		]
+		_is_human = (np.array(confs) > 0.5).sum()
 		
 		if not self.init_flag: return
 
@@ -262,7 +273,7 @@ class FollowMeActionServer(Node):
 		else:  # Either extract new location from bboxes
 			pose = self._reidentify(
 				image, bboxes, kpts, confs, positions
-			) if len(bboxes) > 0 else self._extrapolate()
+			) if _is_human else self._extrapolate()
 			
 			if pose is not None:
 				self._update_last_pose(pose)
@@ -270,9 +281,9 @@ class FollowMeActionServer(Node):
 				self.update_publisher.publish(pose_stamped)
 				self.pose_publisher.publish(pose_stamped)
 			
-		# # Kalman debugging
-		# pose = self._extrapolate()
-		# self.kalman_publisher.publish(PoseStamped(header=_header, pose=pose))
+		# Kalman debugging
+		pose = self._extrapolate()
+		self.kalman_publisher.publish(PoseStamped(header=_header, pose=pose))
 
 	def goal_callback(self, goal_request):
 		self.init_flag = True
