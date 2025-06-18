@@ -16,6 +16,7 @@ import cv2
 from cv_bridge import CvBridge
 from image_geometry import PinholeCameraModel
 
+from tf2_geometry_msgs import do_transform_pose as tf2_do_transform_pose
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion, Pose2D
 from vision_msgs.msg import BoundingBox2D
@@ -118,6 +119,8 @@ class FollowMeActionServer(Node):
 		self.kf.P *= 500.
 		self.kf.R *= 5.
 
+		self._last_posestamped: PoseStamped = None
+
 	def _position_to_pose(self, dest: Point) -> Pose:
 		dest = Point(x=float(dest[0]), y=0., z=float(dest[2]))
 		
@@ -148,11 +151,9 @@ class FollowMeActionServer(Node):
 		])
 		target_id = dist.argmin()
 		
-		if (position:=positions[target_id]) is None: return
+		if (position := positions[target_id]) is None: return
 
-		# dest = Point(x=float(position[0]), y=0., z=float(position[2]))
-		# yaw = math.atan2(dest.z, dest.x)
-		self.kf.x = np.array([position[0], position[2], 0, 0])
+		# self.kf.x = np.array([position[0], position[2], 0, 0])
 		return target_id, self._position_to_pose(position)
 
 	def _reidentify(self, image, bboxes, kpts, confs, positions):
@@ -171,23 +172,25 @@ class FollowMeActionServer(Node):
 			)
 			position = positions[target_id]
 			if position is not None:
-				self._is_dirty = True
-				z = np.array([position[0], position[2]])
-				self.kf.update(z)
+				# z = np.array([position[0], position[2]])
+				# self.kf.update(z)
 				return self._position_to_pose(position)
 
 	def _extrapolate(self) -> Pose:
 		x_pos, y_pos, v_x, v_y = self.kf.x
-		dest = Point(x=float(x_pos), y=0., z=float(y_pos))
-		_last_pose = self._last_poses[-min(10, len(self._last_poses))]
+		dest = Point(x=float(x_pos), y=float(y_pos), z=0.)
+		# dest = Point(x=float(x_pos), y=0., z=float(y_pos))
+		_last_pose = self._last_poses[-min(3, len(self._last_poses))]
 
 		yaw = math.atan2(
-			dest.z - _last_pose.position.z,
+			# dest.z - _last_pose.position.z,
+			dest.y - _last_pose.position.y,
 			dest.x - _last_pose.position.x,
 		)
-		q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
+		# q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
+		q = tf_transformations.quaternion_from_euler(0, 0, yaw)
 		return Pose(
-			position=Point(x=float(x_pos), y=0., z=float(y_pos)),
+			position=Point(x=float(x_pos), y=float(y_pos), z=0.),
 			orientation=Quaternion(x=q[0], y=q[1], z=q[2], w=q[3]),
 			# orientation=Quaternion(x=0., y=0., z=0., w=q[3]),
 		)
@@ -200,11 +203,12 @@ class FollowMeActionServer(Node):
 			# print(_last_pose)
 			dist = np.linalg.norm([
 				_last_pose.position.x - pose.position.x,
-				_last_pose.position.z - pose.position.z,
+				# _last_pose.position.z - pose.position.z,
+				_last_pose.position.y - pose.position.y,
 			])
 			if dist > 0.025:
 				self._last_poses.append(pose)
-		if len(self._last_poses) > 10:
+		if len(self._last_poses) > 5:
 			self._last_poses.pop(0)
 
 	def yolo_callback(self, msg: ResultArray):
@@ -231,14 +235,13 @@ class FollowMeActionServer(Node):
 			[ret.position.x, ret.position.y, ret.position.z]
 			for ret in msg.results
 		]
-		_is_human = (np.array(confs) > 0.5).sum()
+		_is_human = (np.array(confs) > 0.5).any()
 		
 		if not self.init_flag: return
 
 		# initiate the FollowMe via sending NavigateToPose
 		self.kf.predict()
 
-		pose = None
 		_header = Header(
 			frame_id=msg.image.header.frame_id,
 			stamp=self.get_clock().now().to_msg()
@@ -246,13 +249,24 @@ class FollowMeActionServer(Node):
 		if not self._is_following:
 			if len(bboxes) == 0: return
 
-			self._is_following = True
-			self._is_dirty = True
-
 			target_id, pose = self._get_init_pose(image, bboxes, positions)
 			if pose is None: return
+			
+			# init kalman filter
+			try:
+				transform = self.tf_buffer.lookup_transform(
+					"map",
+					msg.image.header.frame_id,
+					rclpy.time.Time(),
+					timeout=rclpy.duration.Duration(seconds=0.5)
+				)
+				t_pose = tf2_do_transform_pose(pose, transform)
+				self.kf.x = np.array([t_pose.position.x, t_pose.position.y, 0, 0])
+				self._update_last_pose(t_pose)
+			except Exception as e:
+				self.get_logger().warn(f"Cannot initialize Kalman filter due to transformation: {e}")
+				return
 
-			self._update_last_pose(pose)
 			goal_msg = NavigateToPose.Goal()
 			goal_msg.pose = PoseStamped(header=_header, pose=pose)
 			
@@ -270,20 +284,62 @@ class FollowMeActionServer(Node):
 				all_features.cpu().detach(),
 				visible_part.cpu().detach()
 			)
+
+			self._is_following = True
 		else:  # Either extract new location from bboxes
+			_header.frame_id = "map"
 			pose = self._reidentify(
 				image, bboxes, kpts, confs, positions
-			) if _is_human else self._extrapolate()
+			) if _is_human else None
+			# if _is_human and self._is_dirty: self._is_dirty = False
 			
-			if pose is not None:
-				self._update_last_pose(pose)
-				pose_stamped = PoseStamped(header=_header, pose=pose)
+			_flag = False
+			if pose is None:
+				pose = self._extrapolate()
+				_flag = True
+			else:
+				# update kalman filter
+				self._is_dirty = False
+				try:
+					transform = self.tf_buffer.lookup_transform(
+						"map",
+						msg.image.header.frame_id,
+						rclpy.time.Time(),
+						timeout=rclpy.duration.Duration(seconds=0.2)
+					)
+					pose = tf2_do_transform_pose(pose, transform)
+					self.kf.update([pose.position.x, pose.position.y])
+					self._update_last_pose(pose)
+				except Exception as e:
+					self.get_logger().warn(f"Cannot update Kalman filter due to transformation: {e}")
+					return
+
+			pose_stamped = PoseStamped(header=_header, pose=pose)
+			if not self._is_dirty:
 				self.update_publisher.publish(pose_stamped)
 				self.pose_publisher.publish(pose_stamped)
+			if _flag: self._is_dirty = True
+			# if not _is_human: self._is_dirty = True
+			# else: self._is_dirty = False
 			
-		# Kalman debugging
-		pose = self._extrapolate()
-		self.kalman_publisher.publish(PoseStamped(header=_header, pose=pose))
+			# Kalman debugging
+
+			_header.frame_id = "map"
+			self.kalman_publisher.publish(PoseStamped(header=_header, pose=self._extrapolate()))
+
+		# all_features, visible_part = self.tracker.process_crop(
+		# 	image, bboxes, kpts, confs
+		# ) if _is_human else None, None
+		# if _is_human:
+		# 	target_id = self.tracker.identify(
+		# 		all_features.cpu().detach(),
+		# 		visible_part.cpu().detach(),
+		# 	) if self._is_following else self._get_init_pose(image, bboxes, positions)
+		# 	if target_id is None:
+		# 		return
+		# 	position = positions[target_id]
+		# else:
+		# 	position = positions[target_id]
 
 	def goal_callback(self, goal_request):
 		self.init_flag = True

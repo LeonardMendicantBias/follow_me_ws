@@ -22,6 +22,8 @@ msg/_*.py
 build_isolated/
 devel_isolated/
 
+rosbag2*/
+
 # Python stuff
 __pycache__
 

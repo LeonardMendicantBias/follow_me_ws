@@ -11,20 +11,18 @@
     output="screen"
   />
   <include file="$(find-pkg-share velodyne)/launch/velodyne-all-nodes-VLP16-launch.py"/>
-  <node
+  <!-- <node
     pkg="point_cloud_transport"
     exec="republish"
     name="draco_encode"
     output="screen"
   >
-    <!-- Parameters -->
     <param name="in_transport" value="raw"/>
     <param name="out_transport" value="draco"/>
     
-    <!-- Remappings -->
     <remap from="in" to="/velodyne_points"/>
     <remap from="out" to="/draco"/>
-  </node>
+  </node> -->
 
   <!-- RGB camera -->
   <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">

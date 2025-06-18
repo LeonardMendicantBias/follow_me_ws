@@ -137,7 +137,7 @@ class Tracker:
 	def identify(self,
 		all_features,  # (K, N+1, D)
 		visible_part,  # (K, N)
-		threshold=0.5
+		threshold=0.7
 	):
 		global_visible_part = visible_part.amax(axis=-1, keepdim=True)
 		_visible_part = torch.cat([global_visible_part, visible_part], dim=-1)
