@@ -101,23 +101,23 @@ class FollowMeActionServer(Node):
 		self._is_following = False
 		self.tracker.reset()
 		self._last_poses: List[Pose] = []
-		self.kf = KalmanFilter(dim_x=4, dim_z=2)
+		# self.kf = KalmanFilter(dim_x=4, dim_z=2)
 
-		self.kf.x = np.array([0, 0, 0, 0])
+		# self.kf.x = np.array([0, 0, 0, 0])
 
-		# Covariances
-		self.kf.F = np.array([
-			[1, 0, self.dt, 0],
-			[0, 1, 0, self.dt],
-			[0, 0, 1,  0],
-			[0, 0, 0,  1]
-		])
-		self.kf.H = np.array([
-			[1, 0, 0, 0],
-			[0, 1, 0, 0]
-		])
-		self.kf.P *= 500.
-		self.kf.R *= 5.
+		# # Covariances
+		# self.kf.F = np.array([
+		# 	[1, 0, self.dt, 0],
+		# 	[0, 1, 0, self.dt],
+		# 	[0, 0, 1,  0],
+		# 	[0, 0, 0,  1]
+		# ])
+		# self.kf.H = np.array([
+		# 	[1, 0, 0, 0],
+		# 	[0, 1, 0, 0]
+		# ])
+		# self.kf.P *= 500.
+		# self.kf.R *= 5.
 
 		self._last_posestamped: PoseStamped = None
 
@@ -177,20 +177,23 @@ class FollowMeActionServer(Node):
 				return self._position_to_pose(position)
 
 	def _extrapolate(self) -> Pose:
-		x_pos, y_pos, v_x, v_y = self.kf.x
-		dest = Point(x=float(x_pos), y=float(y_pos), z=0.)
-		# dest = Point(x=float(x_pos), y=0., z=float(y_pos))
-		_last_pose = self._last_poses[-min(3, len(self._last_poses))]
+		# x_pos, y_pos, v_x, v_y = self.kf.x
+		# dest = Point(x=float(x_pos), y=float(y_pos), z=0.)
+		# dest = Point(x=float(_last_pose_1.position.x), y=0., z=float(_last_pose_1.position.z))
+		dest = self._last_poses[-1]
+		# _last_pose = self._last_poses[-min(3, len(self._last_poses))]
+		if len(self._last_poses) < 3: return None
+		_last_pose = self._last_poses[-3]
 
 		yaw = math.atan2(
-			# dest.z - _last_pose.position.z,
-			dest.y - _last_pose.position.y,
-			dest.x - _last_pose.position.x,
+			# dest.position.z - _last_pose.position.z,
+			dest.position.y - _last_pose.position.y,
+			dest.position.x - _last_pose.position.x,
 		)
 		# q = tf_transformations.quaternion_from_euler(0, -yaw, 0)
 		q = tf_transformations.quaternion_from_euler(0, 0, yaw)
 		return Pose(
-			position=Point(x=float(x_pos), y=float(y_pos), z=0.),
+			position=dest.position,
 			orientation=Quaternion(x=q[0], y=q[1], z=q[2], w=q[3]),
 			# orientation=Quaternion(x=0., y=0., z=0., w=q[3]),
 		)
@@ -202,11 +205,11 @@ class FollowMeActionServer(Node):
 			_last_pose = self._last_poses[-1]
 			# print(_last_pose)
 			dist = np.linalg.norm([
-				_last_pose.position.x - pose.position.x,
-				# _last_pose.position.z - pose.position.z,
+				# _last_pose.position.x - pose.position.x,
+				_last_pose.position.z - pose.position.z,
 				_last_pose.position.y - pose.position.y,
 			])
-			if dist > 0.025:
+			if dist > 0.05:
 				self._last_poses.append(pose)
 		if len(self._last_poses) > 5:
 			self._last_poses.pop(0)
@@ -240,7 +243,7 @@ class FollowMeActionServer(Node):
 		if not self.init_flag: return
 
 		# initiate the FollowMe via sending NavigateToPose
-		self.kf.predict()
+		# self.kf.predict()
 
 		_header = Header(
 			frame_id=msg.image.header.frame_id,
@@ -251,7 +254,7 @@ class FollowMeActionServer(Node):
 
 			target_id, pose = self._get_init_pose(image, bboxes, positions)
 			if pose is None: return
-			
+			# self._update_last_pose(pose)
 			# init kalman filter
 			try:
 				transform = self.tf_buffer.lookup_transform(
@@ -261,7 +264,7 @@ class FollowMeActionServer(Node):
 					timeout=rclpy.duration.Duration(seconds=0.5)
 				)
 				t_pose = tf2_do_transform_pose(pose, transform)
-				self.kf.x = np.array([t_pose.position.x, t_pose.position.y, 0, 0])
+				# self.kf.x = np.array([t_pose.position.x, t_pose.position.y, 0, 0])
 				self._update_last_pose(t_pose)
 			except Exception as e:
 				self.get_logger().warn(f"Cannot initialize Kalman filter due to transformation: {e}")
@@ -296,6 +299,7 @@ class FollowMeActionServer(Node):
 			_flag = False
 			if pose is None:
 				pose = self._extrapolate()
+				if pose is None: return
 				_flag = True
 			else:
 				# update kalman filter
@@ -308,7 +312,7 @@ class FollowMeActionServer(Node):
 						timeout=rclpy.duration.Duration(seconds=0.2)
 					)
 					pose = tf2_do_transform_pose(pose, transform)
-					self.kf.update([pose.position.x, pose.position.y])
+					# self.kf.update([pose.position.x, pose.position.y])
 					self._update_last_pose(pose)
 				except Exception as e:
 					self.get_logger().warn(f"Cannot update Kalman filter due to transformation: {e}")
@@ -324,8 +328,10 @@ class FollowMeActionServer(Node):
 			
 			# Kalman debugging
 
-			_header.frame_id = "map"
-			self.kalman_publisher.publish(PoseStamped(header=_header, pose=self._extrapolate()))
+			_pose = self._extrapolate()
+			if _pose is None: return
+			# _header.frame_id = "map"
+			self.kalman_publisher.publish(PoseStamped(header=_header, pose=_pose))
 
 		# all_features, visible_part = self.tracker.process_crop(
 		# 	image, bboxes, kpts, confs
