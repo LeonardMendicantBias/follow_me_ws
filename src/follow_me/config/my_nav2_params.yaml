@@ -270,6 +270,7 @@ global_costmap:
           inf_is_valid: true
       static_layer:
         enabled: False
+        # subcribe_to_updates: True
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
       inflation_layer:

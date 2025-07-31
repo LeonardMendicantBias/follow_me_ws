@@ -141,7 +141,6 @@ class FollowMeActionServer(Node):
 	def nav_callback(self, future):
 		future.result()
 		self.get_logger().info(f"first destination")
-		self._is_following = True
 
 	def _get_init_pose(self, image, bboxes, positions) -> Pose:
 		H, W, _ = image.shape
@@ -217,30 +216,33 @@ class FollowMeActionServer(Node):
 	def yolo_callback(self, msg: ResultArray):
 		image = self.cv_bridge.imgmsg_to_cv2(msg.image, "bgr8")
 
-		bboxes = [
+		bboxes = np.array([
 			[
 				ret.bbox.center.position.x, ret.bbox.center.position.y,
 				ret.bbox.size_x, ret.bbox.size_y
 			] for ret in msg.results
-		]
-		kpts = [
+		])
+		kpts = np.array([
 			[
 				[kpt.x, kpt.y]
 				for kpt in ret.kpts
 			]
 			for ret in msg.results
-		]
-		confs = [
+		])
+		confs = np.array([
 			ret.confidences
 			for ret in msg.results
-		]
-		positions = [
+		])
+		positions = np.array([
 			[ret.position.x, ret.position.y, ret.position.z]
 			for ret in msg.results
-		]
-		_is_human = (np.array(confs) > 0.5).any()
+		])
 		
-		if not self.init_flag: return
+		_is_valid_kpts = np.array(confs) > 0.5 if len(bboxes) > 0 else np.array([False])
+		_is_valid_human = _is_valid_kpts.max(-1)
+		_is_human = _is_valid_human.any()
+		
+		if not self.init_flag: return 
 
 		# initiate the FollowMe via sending NavigateToPose
 		# self.kf.predict()
@@ -280,19 +282,20 @@ class FollowMeActionServer(Node):
 			nav_future.add_done_callback(self.nav_callback)
 			
 			all_features, visible_part = self.tracker.process_crop(
-				image, bboxes, kpts, confs
+				image, bboxes[_is_valid_human],
+				kpts[_is_valid_human], confs[_is_valid_human]
 			)
 			self.tracker.update(
 				target_id, 
 				all_features.cpu().detach(),
 				visible_part.cpu().detach()
 			)
-
 			self._is_following = True
 		else:  # Either extract new location from bboxes
 			_header.frame_id = "map"
 			pose = self._reidentify(
-				image, bboxes, kpts, confs, positions
+				image, bboxes[_is_valid_human], kpts[_is_valid_human],
+				confs[_is_valid_human], positions[_is_valid_human]
 			) if _is_human else None
 			# if _is_human and self._is_dirty: self._is_dirty = False
 			
