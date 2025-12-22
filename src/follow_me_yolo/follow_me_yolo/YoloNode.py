@@ -1,4 +1,7 @@
 import time
+import zlib
+import struct
+import yaml
 from pathlib import Path
 
 import rclpy
@@ -7,7 +10,7 @@ from rclpy.node import Node
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from tf2_ros import Buffer, TransformListener, TransformException
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from vision_msgs.msg import BoundingBox2D, Pose2D, Point2D
 from geometry_msgs.msg import Point, Pose, Vector3
 import sensor_msgs_py.point_cloud2 as pc2
@@ -21,7 +24,6 @@ from cv_bridge import CvBridge, CvBridgeError
 
 import numpy as np
 from ultralytics import YOLO
-import open3d as o3d
 
 from follow_me_msgs.msg import ResultArray, YoloResult
 
@@ -45,11 +47,10 @@ class YoloPublisher(Node):
       ]
 
       self.rgb_model = PinholeCameraModel()
-      # self.depth_model = PinholeCameraModel()
       self.cv_bridge = CvBridge()
 
-      self.image_sub = Subscriber(self, Image, '/camera/camera/color/image_raw')
-      self.depth_sub = Subscriber(self, Image, '/camera/camera/aligned_depth_to_color/image_raw')
+      self.image_sub = Subscriber(self, CompressedImage, '/camera/camera/color/image_raw/compressed')
+      self.depth_sub = Subscriber(self, CompressedImage, '/camera/camera/aligned_depth_to_color/image_raw/compressedDepth')
       self.rgb_info_sub = Subscriber(self, CameraInfo, '/camera/camera/color/camera_info')
       # self.depth_info_sub = Subscriber(self, CameraInfo, '/camera/camera/depth/camera_info')
       self.ts = ApproximateTimeSynchronizer(
@@ -75,14 +76,6 @@ class YoloPublisher(Node):
       _yolo_model = "yolo11n-pose"
       self.model = YOLO(_yolo_model)
       self.model.cuda()
-      # if not Path(f"./{_yolo_model}.engine").is_file():
-      #    self.model.export(
-      #       format="engine",
-      #       imgsz=self.img_size,
-      #       half=True,
-      #       simplify=True,
-      #    )
-      # self.tensorrt_model = YOLO(f"./{_yolo_model}.engine")
       self.get_logger().info("AI initiated.")
 
       self.skeleton = [
@@ -211,8 +204,9 @@ class YoloPublisher(Node):
       confs=[],
       positions=[]
    ):
+      
       response = ResultArray()
-      response.image = img_msg
+      response.image = self.cv_bridge.cv2_to_imgmsg(img_msg, encoding="bgr8")
       response.results = [
          YoloResult(
             bbox=BoundingBox2D(
@@ -230,16 +224,24 @@ class YoloPublisher(Node):
       self.result_publisher.publish(response)
 
    def synced_callback(self,
-      rgb_msg: Image,
-      depth_msg: Image,
+      rgb_msg: CompressedImage,
+      depth_msg: CompressedImage,
       rgb_info_msg: CameraInfo,
-      # depth_info_msg: CameraInfo,
    ):
       self.rgb_model.fromCameraInfo(rgb_info_msg)
-      # self.depth_model.fromCameraInfo(depth_info_msg)
+      np_arr = np.frombuffer(rgb_msg.data, dtype=np.uint8)
+      image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-      image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
-      depth_image = self.cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough")  # (480, 848)
+      # image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8")  # (480, 848, 3)
+
+      # depth_image = self.cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough")  # (480, 848)
+      # _depth_image = cv2.resize(depth_image, (image.shape[1], image.shape[0]))
+      depth_data = bytes(depth_msg.data)
+      png_data = depth_data[12:]
+      depth_image = cv2.imdecode(
+         np.frombuffer(png_data, np.uint8),
+         cv2.IMREAD_UNCHANGED
+      )
       _depth_image = cv2.resize(depth_image, (image.shape[1], image.shape[0]))
 
       results = self.model(
@@ -251,7 +253,7 @@ class YoloPublisher(Node):
       self.get_logger().info(f"detecting {len(result.boxes)} humans")
 
       if len(result) == 0:
-         self.report(rgb_msg)
+         self.report(image)
          # self.visualize_yolo(_depth_image, result)
          self.visualize_yolo(image, result)
          return
@@ -267,7 +269,7 @@ class YoloPublisher(Node):
       distances = _depth_image[_xy[..., 1], _xy[..., 0]]
       is_kpts_vis = confs > self.conf_thres
       if not is_kpts_vis.any():
-         self.report(rgb_msg)
+         self.report(image)
          self.visualize_yolo(image, result)
          return
       
@@ -304,7 +306,7 @@ class YoloPublisher(Node):
       positions = positions.reshape(K, N, -1) * _is_kpts_vis[..., None]
       positions = positions.sum(axis=-2) / _is_kpts_vis.sum(axis=-1, keepdims=True)
       
-      self.report(rgb_msg,
+      self.report(image,
          bboxes[is_kpts_vis.max(-1)], kpts[is_kpts_vis.max(-1)],
          confs[is_kpts_vis.max(-1)], positions#[is_kpts_vis.max(-1)]
       )
